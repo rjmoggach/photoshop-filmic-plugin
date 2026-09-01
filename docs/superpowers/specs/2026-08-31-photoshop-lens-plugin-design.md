@@ -35,8 +35,8 @@ Four components. Only one is coupled to Adobe.
 |---|---|---|---|
 | `lenscore` | C++20 | nothing | All optics and film physics. Linear float image in, image out. |
 | `lenscli` | C++20 | `lenscore` | Terminal renderer and test harness. |
-| `lens8bf` | C++20 | `lenscore`, Photoshop SDK | The `.8bf` filter. Tiling, bit depth, colour, scripting. |
-| `lensui` | C++20 | `lenscore`, Dear ImGui | Cross-platform dialog. Metal on macOS, D3D11 on Windows. |
+| `lensaddon` | C++20 | `lenscore`, UXP Hybrid SDK | The `.uxpaddon` native module. Pixel buffers in and out, parameter marshalling. |
+| `lenspanel` | JS/HTML | UXP, Spectrum | The panel UI. Controls, presets, preview, document I/O via the Imaging API. |
 
 ### 3.1 Why this split
 
@@ -45,10 +45,10 @@ Four components. Only one is coupled to Adobe.
 
 1. Optics can be developed and tuned from a terminal, with numeric assertions,
    without launching Photoshop. Tuning optics through a GUI is not viable.
-2. The Photoshop-specific risk (SDK gating, tiling, signing, ImGui on two
-   platforms) is confined to `lens8bf` and `lensui`. If the C++ host path
-   proves too costly, `lenscore` compiles to WebAssembly and drops into a UXP
-   panel with no change to the physics.
+2. The host-specific risk — SDK versions, pixel marshalling, signing — is
+   confined to `lensaddon` and `lenspanel`. This paid for itself on
+   2026-08-31, when the host route changed from an 8BF filter to a UXP Hybrid
+   plugin and not one line of physics moved.
 3. `lenscore` is the only thing that needs to be fast, so optimisation effort
    has one target.
 
@@ -80,8 +80,8 @@ lenscore/
 lensdata/    *.lens  *.stock  JSON parameter sets
              rgb2spec/        precomputed spectral upsampling tables
 lenscli/     main.cpp
-lens8bf/     pipl.r  main.cpp  tiles.cpp  descriptors.cpp  colour.cpp
-lensui/      app.cpp  preview.cpp  backends/{metal,d3d11}
+lensaddon/   module.cpp  marshal.cpp  colour.cpp    the .uxpaddon native module
+lenspanel/   manifest.json  index.html  main.js  ui/  the UXP panel
 lensfit/     calibration tool: chart photos or a prescription -> .lens file
 rgb2spec/    one-off generator for the spectral upsampling tables
 tests/       golden/  metrics/{mtf.cpp,vignette.cpp,fringe.cpp,energy.cpp}
@@ -522,74 +522,85 @@ In the UI this is not exposed as function composition. It appears as:
 
 Every control's neutral position reproduces the measured lens exactly.
 
-## 7. Photoshop adapter (`lens8bf`)
+## 7. Photoshop host (`lensaddon` + `lenspanel`)
 
-### 7.1 Selectors
+**Decision, 2026-08-31: UXP Hybrid, not an 8BF filter.** Adobe shipped UXP
+Hybrid plugins for Photoshop in v24.2 — a UXP panel front-end plus a native
+C++ `.uxpaddon` back-end, with a Node-API-style surface. This is the supported
+answer to the gap recorded earlier in this project: that there is no supported
+UXP UI for a C++ filter plugin. Taking it deletes four things the 8BF route
+demanded — the Dear ImGui dialog, its Metal and D3D11 backends, the PiPL
+resource chain (`Rez`, `Cvntpipl.exe`, `rc.exe`), and the per-platform IDE
+projects. `lenscore` is unchanged either way, which is why the decision was
+cheap to take this late.
 
-`filterSelectorAbout`, `Parameters`, `Prepare`, `Start`, `Continue`, `Finish`.
-`Parameters` shows the ImGui dialog; `Start`/`Continue` drive rendering.
+### 7.1 What a `.uxpaddon` actually is
 
-### 7.2 Whole-image read, not tile-local
+A plain dynamic library — `.dylib` on macOS, `.dll` on Windows — with the file
+extension renamed to `.uxpaddon`. JavaScript loads it with
+`require("lens.uxpaddon")`. Because it is an ordinary shared library, **one
+CMake target builds it on both platforms**; the SDK's Xcode and Visual Studio
+projects are samples, not a requirement.
 
-Halation and veiling glare have support spanning hundreds of pixels — the
-glare floor covers the entire frame by definition — so a tile-local filter
-with a modest `inRect` overlap cannot be correct. The adapter reads the
-**whole layer** through `sPSChannelProcs->ReadPixelsFromLevel()` on
-`filterRecord->documentInfo`, processes it once in `lenscore`, and streams the
-result out through the normal tiled `outData` path.
+Minimum host version is Photoshop **24.2.0**, declared in `manifest.json`.
 
-Memory is the cost: 50MP RGBA float is 800MB. Mitigations: float16
-intermediates where precision allows, and a banded whole-width strip
-decomposition with PSF-radius overlap above a configurable document size.
+### 7.2 Division of labour
 
-Photoshop delivers channels in **planar** order (all red, then all green);
-`lenscore` wants interleaved. Conversion happens at the adapter boundary only.
+- **`lenspanel`** (UXP, JS/HTML/Spectrum): all UI, preset loading, document
+  selection, progress, and reading and writing pixels through the Imaging API
+  (`imaging.getPixels` / `imaging.putPixels`).
+- **`lensaddon`** (C++): receives a linear float buffer plus a parameter
+  object, calls `lens::render`, returns the result. It holds no UI and no
+  Photoshop state.
 
-### 7.3 Bit depth
+The JS-to-native boundary is cheap to cross, so the panel may call the addon
+per preview at proxy resolution and once more on commit.
 
-`filterRecord->depth` is 8, 16, or 32.
+### 7.3 What this route costs
 
-- 8-bit: `0..255`.
-- 16-bit: **`0..32768`, not `0..65535`.** The classic Photoshop trap; asserted
-  in a unit test.
-- 32-bit: float, already scene-referred, nominally `0..1` but legally above.
+Two things the 8BF filter would have given us for free, both accepted
+deliberately:
 
-### 7.4 Colour management
+1. **No Filter menu entry and no Smart Filter re-editability.** The plugin is
+   a panel. Re-editability is recovered by writing results to a new layer and
+   storing the parameter set in that layer's metadata, so the panel can reload
+   and re-render — an approximation of a Smart Filter, not the real thing.
+2. **No host-provided tiling or proxy.** The panel asks the Imaging API for
+   the pixels it wants, so proxy generation and any banding for large
+   documents are ours to implement rather than the host's.
 
-Read the document profile through the ICC suite. Convert to a linear working
-space — **Rec.2020 linear**, for gamut headroom under saturated spectral
-fringes — operate, convert back. If no profile is present, assume sRGB and say
-so in the dialog rather than guessing silently.
+If Smart Filter support later proves necessary, an 8BF filter can be added
+beside the panel: it would link the same `lenscore` and need only the adapter
+and dialog work this decision defers. The SDK's `PIUXPSuite.h` suggests the
+two can be bridged, but that is unverified and not relied upon.
 
-### 7.5 Selection masks
+### 7.4 Colour and precision
 
-Respect `haveMask`. Leave `autoMask` at its default so Photoshop composites the
-selection, except where feathering interacts badly with wide-support stages, in
-which case set `autoMask = false` and composite ourselves.
+The panel requests pixels in a known working space and bit depth rather than
+inheriting whatever the document happens to be. Convert to **Rec.2020 linear**
+at the boundary, operate, convert back. If the document has no profile, assume
+sRGB and say so in the panel rather than guessing silently.
 
-### 7.6 Scripting
+Photoshop's 16-bit values run **`0..32768`, not `0..65535`** — the classic
+trap, asserted in a unit test wherever the addon touches 16-bit data.
 
-Register parameters through `PIDescriptorParameters` with a unique event ID so
-the filter is recordable in Actions and callable from UXP `batchPlay`.
-Parameter keys mirror `params.hpp` field names one-to-one.
+### 7.5 Threading
 
-### 7.7 Threading
+`lenscore` may use all cores over a buffer the addon owns. UXP addon entry
+points follow the SDK's threading contract (`UxpTask`), and no Photoshop or
+UXP object is touched from a worker thread.
 
-The Photoshop API is **not thread-safe**. All SDK calls happen on the calling
-thread. Parallelism exists only inside `lenscore`, over a buffer the adapter
-already owns.
+## 8. Panel UI (`lenspanel`)
 
-## 8. UI (`lensui`)
-
-Dear ImGui, one codebase, two rendering backends (Metal, D3D11). Layout:
-collapsible sections matching the effect groups, a lens and stock preset
-picker, and a preview.
+Spectrum web components, matching Photoshop's own look with no styling work.
+Collapsible sections per effect group, a lens and stock preset picker, and a
+preview.
 
 **Preview strategy.** Full-resolution spatially varying convolution plus Monte
-Carlo grain is seconds, not milliseconds. The preview renders a proxy:
-Photoshop supplies a downsampled proxy through `advanceState()`, all PSF and
-halation radii scale by the proxy ratio, grain `N` drops to 8, and the RGB
-three-band spectral tier is the default. Full quality runs once, on commit.
+Carlo grain is seconds, not milliseconds. The panel fetches a downsampled
+proxy through the Imaging API, scales every PSF and halation radius by the
+proxy ratio, drops grain `N` to 8, and uses the three-band spectral tier. Full
+quality runs once, on commit.
 
 ## 9. Testing
 
@@ -630,28 +641,30 @@ JSON parsing is the sole exception and lives outside `lenscore`.
 
 ## 10. Build and distribution
 
-- CMake, C++20, one tree, `LENS_BUILD_8BF` off by default so `lenscore` and
-  `lenscli` build without the gated SDK.
+- CMake, C++20, one tree. `LENS_BUILD_ADDON` off by default so `lenscore` and
+  `lenscli` build with no SDK present at all.
+- The addon is one `SHARED` CMake target whose output extension is set to
+  `.uxpaddon`. The same target definition serves both platforms.
 - macOS: universal binary (arm64 + x86_64), hardened runtime, codesign and
-  notarize. PiPL via `Rez`.
-- Windows: MSVC, `/arch:AVX2`. PiPL via `Cvntpipl.exe` then `rc.exe`.
-- Install to the Photoshop `Plug-ins` folder; development uses a symlink.
+  notarize. Windows: MSVC, `/arch:AVX2`.
+- Development loads the plugin through UXP Developer Tools (UDT) by pointing
+  it at `manifest.json`; no install step and no symlink into the app bundle.
 
-**Prerequisite the project cannot satisfy itself:** the Photoshop Plug-In and
-Connection SDK is gated behind an Adobe developer account and licence
-acceptance at `developer.adobe.com/console` (Downloads, Photoshop). A human
-must download it and set `PHOTOSHOP_SDK_ROOT`.
+**Prerequisite already satisfied:** the UXP Hybrid Plugin SDK (v6.5.0) and the
+Photoshop Plug-In and Connection SDK (2026, mac, v2) are both unpacked under
+`ref/`, git-ignored. Only the hybrid SDK is on the critical path; the C++ SDK
+is retained for its documentation and for the deferred 8BF option.
 
 ## 11. Phases
 
 | # | Deliverable | Done when |
 |---|---|---|
-| 0 | Toolchain, CMake, PiPL, hello-world `.8bf` that inverts pixels | It loads and runs in Photoshop on both platforms |
+| 0 | Toolchain, CMake, hello-world `.uxpaddon` that inverts pixels, loaded via UDT | The panel calls it and Photoshop shows the result |
 | 1 | `lenscore` skeleton, colour stages, `rgb2spec`, `lenscli`, golden harness | Energy and symmetry tests pass on a null pipeline |
 | 2 | Dispersion with secondary spectrum, lateral CA, vignetting | Fringe-width, vignette-curve and mechanical-vanishing tests pass |
 | 3 | Zernike wavefront, pupil model, PSF-by-FFT, EFF convolver | MTF-by-field and diffraction-star tests pass |
-| 4 | `lens8bf` real adapter: whole-image read, bit depths, colour, mask | Full-res render matches `lenscli` output |
-| 5 | ImGui dialog, proxy preview, descriptor scripting | Recordable in an Action, replayable |
+| 4 | `lensaddon` real bridge: Imaging API buffers, bit depths, colour, selection | Full-res render matches `lenscli` output |
+| 5 | `lenspanel`: Spectrum UI, proxy preview, preset picker, layer-metadata round trip | Re-opening a rendered layer restores its exact settings |
 | 6 | Film stage: sensitivity, MTF, halation, H&D, grain, print | Grain-contrast, H&D and resolution-invariance tests pass |
 | 7 | `lensfit` plus three measured lens presets and two stocks | A fitted preset round-trips within tolerance |
 | 8 | Universal binary, signing, notarization, installer | Installs clean on a machine with no dev tools |
@@ -659,16 +672,19 @@ must download it and set `PHOTOSHOP_SDK_ROOT`.
 Phases 1-3 and 6 are the accuracy work and carry the most risk of being wrong.
 Phases 4-5 are the Photoshop work and carry the most risk of being slow.
 
+The host decision is recorded in section 7; phases 0, 4, 5 and 8 changed with it,
+and phases 1-3, 6 and 7 — the accuracy work — did not move at all.
+
 ## 12. Risks
 
 | Risk | Impact | Mitigation |
 |---|---|---|
 | Monte Carlo grain is slow. Newson report 37.8s for 2048x2048 at N=800; a 50MP document extrapolates to minutes | Unusable commit times | `N` is the quality knob, not a constant: 8 for preview, 64 for commit. Embarrassingly parallel. Pixel-wise algorithm keeps memory flat |
 | Full-res PSF render takes seconds | Poor feel | Proxy preview; commit-time full quality; optional Metal/D3D compute path |
-| 800MB whole-image buffer | Fails on large docs | float16 intermediates; banded strip fallback with PSF overlap |
-| SDK gating blocks phase 0 | Total block | Phases 1-3 and 6 need no SDK; sequence them in parallel |
-| ImGui on two platforms is more work than expected | Schedule | Ship macOS first; `lenscore` is unaffected |
-| C++ host path proves wrong overall | Rework | `lenscore` compiles to WASM for a UXP panel; physics survives intact |
+| 800MB whole-image buffer | Fails on large docs | float16 intermediates; banded strip processing with PSF-radius overlap |
+| Panel and addon version drift | Silent breakage | Addon exports a schema version; the panel refuses to load a mismatch |
+| Imaging API round trip is slow on large documents | Poor feel | Proxy for preview; band the commit pass; the JS-to-native boundary itself is cheap |
+| Losing Smart Filter re-editability proves unacceptable | Rework | Layer-metadata round trip first; an 8BF filter can be added later against the same `lenscore` |
 | Spectral uplift inaccurate for saturated inputs | Wrong fringe colour | Rec.2020 linear working space; round-trip `deltaE` asserted in tests |
 | Stock datasheet curves are hard to source | Weak presets | H&D and MTF are digitisable from published datasheet plots; `lensfit` accepts sampled points |
 

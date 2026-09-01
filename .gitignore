@@ -1,5 +1,7 @@
+.DS_Store
+build/
 ref/*.pdf
 ref/*.zip
 ref/**/__MACOSX/
-build/
-.DS_Store
+ref/f9583d77/
+ref/photoshop-sdk/
