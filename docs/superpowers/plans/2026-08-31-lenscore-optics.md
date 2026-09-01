@@ -22,6 +22,12 @@
 - Golden images are **PFM**. Comparison is by metric tolerance, never byte equality.
 - Every public function that takes an angle takes **radians**. Every function that takes a wavelength takes **nanometres**. Every field radius `t` is **normalised so that the image corner is 1.0**.
 - Tests run under `ctest`. A task is not done until `ctest --output-on-failure` is green.
+- **Every `doctest::Approx(x).epsilon(e)` on a value below about 1.0 MUST also carry
+  `.scale(0)`.** `Approx` compares `|lhs-rhs| < epsilon * (scale + max(|lhs|,|rhs|))` and
+  `scale` defaults to **1.0**, so for small expected values that constant dominates and the
+  epsilon becomes fiction. Measured on this project's own assertions: a nominal 8% MTF gate
+  is really 50% at one sigma and 136% at another; a nominal 5% coma check is really 537%.
+  Write `doctest::Approx(x).epsilon(e).scale(0)` so `e` is a true relative tolerance.
 - **Never use `M_PI`.** It is a POSIX extension, not standard C++, and MSVC omits it
   unless `_USE_MATH_DEFINES` is set — while this project builds with `CXX_EXTENSIONS OFF`
   and targets Windows as well as macOS. Any test needing pi declares it locally:
