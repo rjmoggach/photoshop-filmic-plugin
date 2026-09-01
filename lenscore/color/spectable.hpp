@@ -18,6 +18,17 @@ inline float smoothstep(float x) { return x * x * (3.0f - 2.0f * x); }
 // Warped brightness axis: resolution concentrated near black and near white.
 inline float axisScale(int k, int res) { return smoothstep(smoothstep(float(k) / float(res - 1))); }
 
+// z=0 is an exact-black target, which is degenerate for fitCoeffs (there is no finite
+// (c0,c1,c2) that reaches zero at every wavelength; the sigmoid only approaches it as
+// c2 -> -inf). A tiny floor gives it a well-posed, fittable target instead. This must
+// be the ONLY place that floors the brightness axis: buildTable calls it to choose the
+// fit target for each slice, and lookup calls it to find that slice's bracket position.
+// If the two ever used different floors -- or one used the raw axisScale -- the slices
+// they'd store data at and the slices lookup would search for would silently disagree,
+// which is exactly the class of bug this function exists to rule out by construction.
+inline constexpr float kMinBrightness = 1e-6f;
+inline float axisBrightness(int k, int res) { return std::max(kMinBrightness, axisScale(k, res)); }
+
 inline size_t tableIndex(int res, int i, int z, int y, int x) {
     return ((((size_t(i) * res + z) * res + y) * res + x)) * 3;
 }
@@ -26,7 +37,7 @@ inline SpecTable buildTable(int res) {
     SpecTable t; t.res = res; t.data.assign(size_t(3) * res * res * res * 3, 0.0f);
     for (int i = 0; i < 3; ++i) {
         for (int z = 0; z < res; ++z) {
-            const float scale = std::max(1e-4f, axisScale(z, res));
+            const float scale = axisBrightness(z, res);
             Coeffs warm{};                                   // warm start down each row
             for (int y = 0; y < res; ++y) {
                 for (int x = 0; x < res; ++x) {
@@ -83,10 +94,12 @@ inline Coeffs lookup(const SpecTable& t, const RGB& colour) {
     const float b = v[(i + 2) % 3] / mx;
 
     // Invert the warped brightness axis by search; res is small so this is cheap.
+    // Must use axisBrightness (the same floored convention buildTable fit against), not
+    // the raw axisScale, or the bracket this finds disagrees with what's actually stored.
     const float target = std::min(mx, 1.0f);
     int z0 = 0;
-    while (z0 + 2 < t.res && axisScale(z0 + 1, t.res) < target) ++z0;
-    const float s0 = axisScale(z0, t.res), s1 = axisScale(z0 + 1, t.res);
+    while (z0 + 2 < t.res && axisBrightness(z0 + 1, t.res) < target) ++z0;
+    const float s0 = axisBrightness(z0, t.res), s1 = axisBrightness(z0 + 1, t.res);
     const float fz = (s1 > s0) ? std::clamp((target - s0) / (s1 - s0), 0.0f, 1.0f) : 0.0f;
 
     const float fx = a * (t.res - 1), fy = b * (t.res - 1);
@@ -118,14 +131,34 @@ inline bool writeTable(const std::string& path, const SpecTable& t) {
     return true;
 }
 
+// Real tables ship at res=64. This bounds a corrupted or hostile header well above any
+// table this project would plausibly generate, while keeping the res^3 arithmetic below
+// -- and the allocation it drives -- far from a size_t overflow or a surprise
+// multi-gigabyte allocation.
+inline constexpr int kMaxTableRes = 256;
+
 inline std::optional<SpecTable> readTable(const std::string& path) {
     std::FILE* f = std::fopen(path.c_str(), "rb");
     if (!f) return std::nullopt;
     char magic[4];
     SpecTable t;
     if (std::fread(magic, 1, 4, f) != 4 || std::string(magic, 4) != "LSPT" ||
-        std::fread(&t.res, sizeof(int), 1, f) != 1 || t.res < 2) { std::fclose(f); return std::nullopt; }
-    t.data.resize(size_t(3) * t.res * t.res * t.res * 3);
+        std::fread(&t.res, sizeof(int), 1, f) != 1 ||
+        t.res < 2 || t.res > kMaxTableRes) { std::fclose(f); return std::nullopt; }
+
+    const size_t floatCount = size_t(3) * t.res * t.res * t.res * 3;
+    const size_t expectedBytes = floatCount * sizeof(float);
+
+    // Cross-check the header's claimed size against the bytes actually left in the file
+    // before trusting it enough to size an allocation. An assert would compile away
+    // under NDEBUG and leave this exact allocation sized from an unverified header in
+    // a release build -- the one build where a corrupt file is most likely to appear.
+    if (std::fseek(f, 0, SEEK_END) != 0) { std::fclose(f); return std::nullopt; }
+    const long end = std::ftell(f);
+    if (end < 0 || size_t(end) != 8 + expectedBytes) { std::fclose(f); return std::nullopt; }
+    if (std::fseek(f, 8, SEEK_SET) != 0) { std::fclose(f); return std::nullopt; }
+
+    t.data.resize(floatCount);
     const bool ok = std::fread(t.data.data(), sizeof(float), t.data.size(), f) == t.data.size();
     std::fclose(f);
     return ok ? std::optional<SpecTable>(t) : std::nullopt;
