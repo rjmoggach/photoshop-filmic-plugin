@@ -170,6 +170,37 @@ colour matching functions. It is valid because we integrate back through those
 same CMFs. Retargeting to a camera's response curves would require refitting,
 not merely a different `3x3` matrix.
 
+**Third, and measured on this project rather than inherited from the paper:
+the working space is wider than the model can represent.** Jakob-Hanika report
+zero error on the sRGB gamut. Rec.2020 is considerably wider, and a smooth
+*bounded reflectance* cannot reach chromaticities close to its primaries. The
+model gamut-maps such colours onto the nearest realisable spectrum, and the
+residual is not small.
+
+Measured round-trip error, identical at table resolutions 12, 24, 48 and 64 and
+in the direct fit with no table at all — so this is the model, not
+interpolation:
+
+| Rec.2020 input | chromaticity | worst channel error |
+|---|---|---|
+| `(1.0, 0.2, 0.1)` | x 0.570, y 0.337 | blue lands at **-0.0067**, a sign flip |
+| `(0.1, 1.0, 0.2)` | x 0.202, y 0.598 | red **+66%** |
+| `(0.15, 0.2, 1.0)` | x 0.184, y 0.147 | under 0.2% |
+| neutrals and moderate hues | near white | under 0.3% |
+
+Two consequences we accept deliberately. **Negative channels are clamped at
+the upsampling boundary**, because a negative radiance is meaningless and would
+propagate as an artefact. And **highly saturated inputs render approximately**:
+the optics are applied to the nearest representable metamer, not to the exact
+input colour. For a lens simulator this is defensible — real subjects rarely sit
+on the Rec.2020 primaries, and the error is a colour shift on already-extreme
+inputs rather than an optical error. It is recorded here so it is a decision
+rather than a surprise.
+
+If it ever matters, the fix is not more table resolution — resolution changes
+nothing here. It is either a narrower working space, or an emissive rather than
+reflectance-bounded upsampling model.
+
 Second, the reconstruction treats the spectrum as a reflectance under an
 **equal-energy illuminant**, while the Rec.2020 matrices are referenced to
 **D65**. We reconcile the two with a diagonal white-point scale in XYZ, applied

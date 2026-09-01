@@ -21,8 +21,8 @@ TEST_CASE("point grid places isolated unit points on the expected lattice") {
 
 TEST_CASE("slanted edge is genuinely slanted and hits both levels") {
     const Plane p = slantedEdge(64, 64, 5.0f, 0.1f, 0.9f);
-    CHECK(p.at(2, 32)  == doctest::Approx(0.1f).epsilon(1e-3));
-    CHECK(p.at(61, 32) == doctest::Approx(0.9f).epsilon(1e-3));
+    CHECK(p.at(2, 32)  == doctest::Approx(0.1f).epsilon(1e-3).scale(0));
+    CHECK(p.at(61, 32) == doctest::Approx(0.9f).epsilon(1e-3).scale(0));
     // The transition column shifts down the rows because the edge is tilted.
     auto crossing = [&](int y) {
         for (int x = 1; x < 64; ++x) if (p.at(x, y) > 0.5f) return x;
@@ -59,7 +59,7 @@ TEST_CASE("Siemens star is rotationally periodic in the spoke count") {
     CHECK(hi - lo > 0.5);                      // there is real angular structure to be periodic
     for (int k = 0; k < 8; ++k) {
         const double a = 0.31 + k * 0.4;
-        CHECK(sample(a) == doctest::Approx(sample(a + 2.0 * kPi / 16.0)).epsilon(0.05));
+        CHECK(sample(a) == doctest::Approx(sample(a + 2.0 * kPi / 16.0)).epsilon(0.05).scale(0));
     }
 }
 
@@ -73,7 +73,7 @@ TEST_CASE("single point carries unit energy at the exact centre") {
 TEST_CASE("plane to image and back is lossless for grey") {
     const Plane a = flatField(8, 8, 0.42f);
     const Plane b = luminance(toImage(a));
-    for (int i = 0; i < 64; ++i) CHECK(b.v[i] == doctest::Approx(a.v[i]).epsilon(1e-5));
+    for (int i = 0; i < 64; ++i) CHECK(b.v[i] == doctest::Approx(a.v[i]).epsilon(1e-5).scale(0));
 }
 
 TEST_CASE("luminance uses the Rec.2020 weights in the right channel order") {
@@ -82,9 +82,9 @@ TEST_CASE("luminance uses the Rec.2020 weights in the right channel order") {
     // so a swapped pair changes the answer.
     Image im(1, 1);
     im.at(0, 0, 0) = 1.0f; im.at(0, 0, 1) = 0.0f; im.at(0, 0, 2) = 0.0f;
-    CHECK(luminance(im).at(0, 0) == doctest::Approx(0.2627f).epsilon(1e-4));
+    CHECK(luminance(im).at(0, 0) == doctest::Approx(0.2627f).epsilon(1e-4).scale(0));
     im.at(0, 0, 0) = 0.0f; im.at(0, 0, 1) = 1.0f;
-    CHECK(luminance(im).at(0, 0) == doctest::Approx(0.6780f).epsilon(1e-4));
+    CHECK(luminance(im).at(0, 0) == doctest::Approx(0.6780f).epsilon(1e-4).scale(0));
     im.at(0, 0, 1) = 0.0f; im.at(0, 0, 2) = 1.0f;
-    CHECK(luminance(im).at(0, 0) == doctest::Approx(0.0593f).epsilon(1e-4));
+    CHECK(luminance(im).at(0, 0) == doctest::Approx(0.0593f).epsilon(1e-4).scale(0));
 }

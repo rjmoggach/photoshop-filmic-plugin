@@ -25,8 +25,8 @@ TEST_CASE("a straight-sided hexagon touches 1 at vertices and cos(pi/6) at flats
         const float r = apertureEdgeRadius(6, 0.0f, 0.0f, th);
         lo = std::min(lo, r); hi = std::max(hi, r);
     }
-    CHECK(hi == doctest::Approx(1.0f).epsilon(1e-3));
-    CHECK(lo == doctest::Approx(std::cos(3.14159265f / 6.0f)).epsilon(1e-3));
+    CHECK(hi == doctest::Approx(1.0f).epsilon(1e-3).scale(0));
+    CHECK(lo == doctest::Approx(std::cos(3.14159265f / 6.0f)).epsilon(1e-3).scale(0));
 }
 
 TEST_CASE("curvature interpolates the polygon back to a circle") {
@@ -39,20 +39,20 @@ TEST_CASE("curvature interpolates the polygon back to a circle") {
 }
 
 TEST_CASE("an unclipped circular pupil has full energy on axis") {
-    CHECK(pupilEnergyFraction(circular(), 0.0f, 256) == doctest::Approx(1.0f).epsilon(0.01));
+    CHECK(pupilEnergyFraction(circular(), 0.0f, 256) == doctest::Approx(1.0f).epsilon(0.01).scale(0));
 }
 
 TEST_CASE("a hexagonal aperture passes the known polygon area ratio") {
     PupilParams p = circular();
     p.blades = 6; p.curvature = 0.0f;
     // regular hexagon in a unit circle: area = 3*sin(60) = 2.598, over pi = 0.827
-    CHECK(pupilEnergyFraction(p, 0.0f, 512) == doctest::Approx(0.827f).epsilon(0.02));
+    CHECK(pupilEnergyFraction(p, 0.0f, 512) == doctest::Approx(0.827f).epsilon(0.02).scale(0));
 }
 
 TEST_CASE("the cat's-eye clip removes energy off axis and not on axis") {
     PupilParams p = circular();
     p.rEntrance = 1.0f; p.rExit = 1.0f; p.sepNorm = 0.5f;
-    CHECK(pupilEnergyFraction(p, 0.0f, 256) == doctest::Approx(1.0f).epsilon(0.01));
+    CHECK(pupilEnergyFraction(p, 0.0f, 256) == doctest::Approx(1.0f).epsilon(0.01).scale(0));
     CHECK(pupilEnergyFraction(p, 1.0f, 256) < 0.95f);
 }
 
@@ -60,7 +60,7 @@ TEST_CASE("stopping down removes the cat's-eye clip entirely") {
     PupilParams p = circular();
     p.rEntrance = 1.0f; p.rExit = 1.0f; p.sepNorm = 0.5f;
     p.apertureRadius = 0.5f;                       // f/4 with a wide-open f/2
-    CHECK(pupilEnergyFraction(p, 1.0f, 256) == doctest::Approx(1.0f).epsilon(0.01));
+    CHECK(pupilEnergyFraction(p, 1.0f, 256) == doctest::Approx(1.0f).epsilon(0.01).scale(0));
 }
 
 TEST_CASE("rasterised pupil energy agrees with the independent closed form") {
@@ -77,7 +77,7 @@ TEST_CASE("rasterised pupil energy agrees with the independent closed form") {
         // so 0.5% is already loose relative to rasterisation error; it is not
         // a relaxation for either model's own imprecision.
         CHECK(pupilEnergyFraction(p, 1.0f, 512) ==
-              doctest::Approx(mechanicalFraction(v, 1.0f)).epsilon(0.005));
+              doctest::Approx(mechanicalFraction(v, 1.0f)).epsilon(0.005).scale(0));
     }
 }
 
@@ -92,7 +92,7 @@ TEST_CASE("apodization shifts the pupil centroid outward without adding energy")
             const double u = (2.0 * x) / 255.0 - 1.0;
             sa += a.at(x, y); sb += b.at(x, y); cx += b.at(x, y) * u;
         }
-    CHECK(sb / sa == doctest::Approx(1.0).epsilon(0.01));   // energy preserved
+    CHECK(sb / sa == doctest::Approx(1.0).epsilon(0.01).scale(0));   // energy preserved
     CHECK(cx / sb > 0.02);                                   // centroid moved outward
 }
 
@@ -111,5 +111,5 @@ TEST_CASE("apodization stays energy-neutral at the maximum allowed slope") {
         for (int x = 0; x < 256; ++x) {
             sa += a.at(x, y); sb += b.at(x, y);
         }
-    CHECK(sb / sa == doctest::Approx(1.0).epsilon(0.01));   // energy preserved at the boundary
+    CHECK(sb / sa == doctest::Approx(1.0).epsilon(0.01).scale(0));   // energy preserved at the boundary
 }

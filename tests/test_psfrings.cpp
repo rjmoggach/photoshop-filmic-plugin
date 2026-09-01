@@ -56,9 +56,18 @@ TEST_CASE("a rotationally symmetric aberration gives the same PSF at every angle
     const Plane a = psfAtField(r, 0.8f, 0.0f,             1.0f, 33);
     const Plane b = psfAtField(r, 0.8f, 1.0471975f,       1.0f, 33);   // 60 degrees
     const Plane c = psfAtField(r, 0.8f, 2.7f,             1.0f, 33);
-    for (int i = 0; i < 33 * 33; ++i) {
-        CHECK(b.v[i] == doctest::Approx(a.v[i]).epsilon(0.02));
-        CHECK(c.v[i] == doctest::Approx(a.v[i]).epsilon(0.02));
+    // A relative tolerance on near-zero background pixels is meaningless -- it demands
+    // 2% of ~4e-5. The image's peak is the scale that matters, so compare absolute
+    // difference against it instead. Measured: this 33px window at field=0.8 sits
+    // mostly in the PSF's tail (values span only ~4e-5 to ~1.5e-4, a modest ~4x range,
+    // not a sharp core against negligible background), so the angle-to-angle
+    // discretization noise from resampling the Cartesian ring grid shows up at up to
+    // ~9.3% of peak rather than a couple of percent; 0.12 covers that with headroom
+    // while remaining far tighter than the pre-sweep vacuous (~100%+) tolerance.
+    const float peak = *std::max_element(a.v.begin(), a.v.end());
+    for (size_t i = 0; i < a.v.size(); ++i) {
+        CHECK(std::abs(b.v[i] - a.v[i]) < 0.12f * peak);
+        CHECK(std::abs(c.v[i] - a.v[i]) < 0.12f * peak);
     }
 }
 
@@ -123,7 +132,7 @@ TEST_CASE("resampling to coarser pixels keeps the energy") {
     auto energy = [](const Plane& p) { double s = 0; for (float v : p.v) s += v; return s; };
     const double fine   = energy(psfAtField(r, 0.0f, 0.0f, 1.0f, 81));
     const double coarse = energy(psfAtField(r, 0.0f, 0.0f, 2.0f, 41));
-    CHECK(coarse / fine == doctest::Approx(1.0).epsilon(0.05));
+    CHECK(coarse / fine == doctest::Approx(1.0).epsilon(0.05).scale(0));
 }
 
 // The correction to the brief: psfFromPupil's raw PSF is never normalised (its
@@ -140,7 +149,7 @@ TEST_CASE("the on-axis kernel sums to 1; a vignetted off-axis kernel sums to les
     // kernel captures essentially all of the PSF's energy.
     const double onAxis  = energy(psfAtField(r, 0.0f, 0.0f, 1.0f, 127));
     const double offAxis = energy(psfAtField(r, 1.0f, 0.0f, 1.0f, 127));
-    CHECK(onAxis == doctest::Approx(1.0).epsilon(0.05));
+    CHECK(onAxis == doctest::Approx(1.0).epsilon(0.05).scale(0));
     CHECK(offAxis < onAxis);
 }
 
@@ -219,7 +228,14 @@ TEST_CASE("a pupil clipped almost to nothing still normalises sanely") {
     double s = 0.0;
     for (float v : onAxis.v) { CHECK(std::isfinite(v)); s += v; }
     CHECK(std::isfinite(s));
-    CHECK(s == doctest::Approx(1.0).epsilon(0.2));
+    // Genuine physics, not an over-conversion: an aperture this small widens the Airy
+    // core well past this fixed 65px window, so the window itself truncates real
+    // energy -- measured s ~= 0.6824, i.e. ~32% short of 1.0. epsilon(0.4) states that
+    // measured value honestly; it is numerically the same actual tolerance this check
+    // had before the .scale(0) sweep (nominal 0.2 defaulted to scale=1, an effective
+    // 40% at E=1.0), just now arrived at by stating it instead of by an accidental
+    // scale default.
+    CHECK(s == doctest::Approx(1.0).epsilon(0.4).scale(0));
 }
 
 // Fix round 2: the on-axis kernel sum being close to 1 was previously verified

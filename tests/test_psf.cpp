@@ -27,8 +27,8 @@ static double ringMean(const Plane& p, double r) {
 }
 
 TEST_CASE("sample spacing depends on the wide-open stop, not the working stop") {
-    CHECK(psfSampleSpacingUm(550.0f, 2.0f) == doctest::Approx(1.1f).epsilon(1e-4));
-    CHECK(psfSampleSpacingUm(550.0f, 4.0f) == doctest::Approx(2.2f).epsilon(1e-4));
+    CHECK(psfSampleSpacingUm(550.0f, 2.0f) == doctest::Approx(1.1f).epsilon(1e-4).scale(0));
+    CHECK(psfSampleSpacingUm(550.0f, 4.0f) == doctest::Approx(2.2f).epsilon(1e-4).scale(0));
 }
 
 TEST_CASE("an unaberrated PSF peaks dead centre") {
@@ -46,7 +46,7 @@ TEST_CASE("the first Airy zero lands where diffraction says it should") {
     const PupilParams p = smallDisc();
     const Plane psf = psfFromPupil(p, Wavefront{}, 550.0f, 550.0f, 0.0f, N);
     const double predicted = airyFirstZeroSamples(N, p.apertureRadius);   // 9.76
-    CHECK(predicted == doctest::Approx(9.76).epsilon(0.01));
+    CHECK(predicted == doctest::Approx(9.76).epsilon(0.01).scale(0));
 
     double bestR = 0.0, bestV = 1e30;
     // Scan STOPS before the second null at 2.233*N/(2*R_s) = 17.86 samples. Including it
@@ -55,7 +55,7 @@ TEST_CASE("the first Airy zero lands where diffraction says it should") {
         const double v = ringMean(psf, r);
         if (v < bestV) { bestV = v; bestR = r; }
     }
-    CHECK(bestR == doctest::Approx(predicted).epsilon(0.12));
+    CHECK(bestR == doctest::Approx(predicted).epsilon(0.12).scale(0));
 }
 
 TEST_CASE("stopping down widens the diffraction pattern") {
@@ -79,7 +79,7 @@ TEST_CASE("total PSF energy tracks the pupil energy, so vignetting survives") {
         const Plane a = rasterPupil(p, t, N);
         double s = 0.0; for (float v : a.v) s += double(v) * v; return s;
     };
-    CHECK(energy(1.0f) / energy(0.0f) == doctest::Approx(pupilSq(1.0f) / pupilSq(0.0f)).epsilon(1e-3));
+    CHECK(energy(1.0f) / energy(0.0f) == doctest::Approx(pupilSq(1.0f) / pupilSq(0.0f)).epsilon(1e-3).scale(0));
     CHECK(energy(1.0f) < energy(0.0f));      // it really did lose light
 }
 

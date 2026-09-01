@@ -20,7 +20,7 @@ TEST_CASE("overlap area handles containment and disjointness") {
 
 TEST_CASE("overlap area of two unit circles at unit separation is the known value") {
     // 2*acos(1/2) - sqrt(3)/2 = 1.22837
-    CHECK(circleOverlapArea(1.0f, 1.0f, 1.0f) == doctest::Approx(1.22837f).epsilon(1e-4));
+    CHECK(circleOverlapArea(1.0f, 1.0f, 1.0f) == doctest::Approx(1.22837f).epsilon(1e-4).scale(0));
 }
 
 TEST_CASE("everything is exactly unity at the optical centre") {
@@ -34,7 +34,7 @@ TEST_CASE("natural falloff matches the cosine law analytically") {
     VignetteParams p = defaults();
     const float r = 1.0f * p.sensorHalfDiag_mm;
     const float expected = std::pow(std::cos(std::atan(r / p.focal_mm)), 4.0f);
-    CHECK(naturalFalloff(p, 1.0f) == doctest::Approx(expected).epsilon(1e-5));
+    CHECK(naturalFalloff(p, 1.0f) == doctest::Approx(expected).epsilon(1e-5).scale(0));
 }
 
 TEST_CASE("the exponent is free, not pinned at four") {
@@ -62,8 +62,8 @@ TEST_CASE("mechanical vignetting bites wide open") {
 TEST_CASE("mechanical vignetting vanishes above f/4, as measured") {
     VignetteParams p = defaults();
     CHECK(mechanicalVanishStop(p) == doctest::Approx(4.0f));
-    p.tStop = 4.0f;  CHECK(mechanicalFraction(p, 1.0f) == doctest::Approx(1.0f).epsilon(1e-4));
-    p.tStop = 8.0f;  CHECK(mechanicalFraction(p, 1.0f) == doctest::Approx(1.0f).epsilon(1e-4));
+    p.tStop = 4.0f;  CHECK(mechanicalFraction(p, 1.0f) == doctest::Approx(1.0f).epsilon(1e-4).scale(0));
+    p.tStop = 8.0f;  CHECK(mechanicalFraction(p, 1.0f) == doctest::Approx(1.0f).epsilon(1e-4).scale(0));
     p.tStop = 2.8f;  CHECK(mechanicalFraction(p, 1.0f) < 1.0f);
 }
 

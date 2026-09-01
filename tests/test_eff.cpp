@@ -25,7 +25,7 @@ TEST_CASE("Hann windows at fifty percent overlap sum to one") {
     const int P = 32;
     const std::vector<float> w = hannWindow(P);
     for (int i = 0; i < P / 2; ++i)
-        CHECK(w[i] + w[i + P / 2] == doctest::Approx(1.0f).epsilon(1e-5));
+        CHECK(w[i] + w[i + P / 2] == doctest::Approx(1.0f).epsilon(1e-5).scale(0));
 }
 
 TEST_CASE("a delta kernel everywhere is the identity") {
@@ -33,7 +33,7 @@ TEST_CASE("a delta kernel everywhere is the identity") {
     const Plane out = effConvolve(src, 32, [](float, float) { return deltaKernel(9); });
     for (int y = 8; y < 56; ++y)
         for (int x = 8; x < 56; ++x)
-            CHECK(out.at(x, y) == doctest::Approx(src.at(x, y)).epsilon(1e-3));
+            CHECK(out.at(x, y) == doctest::Approx(src.at(x, y)).epsilon(1e-3).scale(0));
 }
 
 TEST_CASE("a uniform kernel reduces exactly to plain convolution") {
@@ -43,7 +43,7 @@ TEST_CASE("a uniform kernel reduces exactly to plain convolution") {
     const Plane got  = effConvolve(src, 32, [&](float, float) { return k; });
     for (int y = 12; y < 52; ++y)
         for (int x = 12; x < 52; ++x)
-            CHECK(got.at(x, y) == doctest::Approx(want.at(x, y)).epsilon(2e-3));
+            CHECK(got.at(x, y) == doctest::Approx(want.at(x, y)).epsilon(2e-3).scale(0));
 }
 
 TEST_CASE("a normalised kernel preserves energy in the interior") {
@@ -53,7 +53,7 @@ TEST_CASE("a normalised kernel preserves energy in the interior") {
     double a = 0, b = 0;
     for (float v : src.v) a += v;
     for (float v : out.v) b += v;
-    CHECK(b / a == doctest::Approx(1.0).epsilon(0.01));
+    CHECK(b / a == doctest::Approx(1.0).epsilon(0.01).scale(0));
 }
 
 TEST_CASE("a varying kernel really does vary across the frame") {

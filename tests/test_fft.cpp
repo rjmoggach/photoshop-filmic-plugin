@@ -14,7 +14,7 @@ TEST_CASE("transform of a delta is flat") {
     v[0] = Cplx(1, 0);
     fft1d(v, false);
     for (const Cplx& c : v) {
-        CHECK(c.real() == doctest::Approx(1.0f).epsilon(1e-5));
+        CHECK(c.real() == doctest::Approx(1.0f).epsilon(1e-5).scale(0));
         CHECK(c.imag() == doctest::Approx(0.0f).epsilon(1e-5));
     }
 }
@@ -22,7 +22,7 @@ TEST_CASE("transform of a delta is flat") {
 TEST_CASE("transform of a constant is a delta at DC") {
     std::vector<Cplx> v(16, Cplx(1, 0));
     fft1d(v, false);
-    CHECK(std::abs(v[0]) == doctest::Approx(16.0f).epsilon(1e-4));
+    CHECK(std::abs(v[0]) == doctest::Approx(16.0f).epsilon(1e-4).scale(0));
     for (size_t i = 1; i < v.size(); ++i) CHECK(std::abs(v[i]) == doctest::Approx(0.0f).epsilon(1e-4));
 }
 
@@ -52,7 +52,7 @@ TEST_CASE("Parseval holds: energy is preserved up to the size factor") {
     fft2d(v, w, h, false);
     double freq = 0.0;
     for (const Cplx& c : v) freq += std::norm(c);
-    CHECK(freq == doctest::Approx(spatial * w * h).epsilon(1e-4));
+    CHECK(freq == doctest::Approx(spatial * w * h).epsilon(1e-4).scale(0));
 }
 
 TEST_CASE("fftShift moves DC to the centre and is its own inverse for even sizes") {

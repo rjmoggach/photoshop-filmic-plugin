@@ -4,7 +4,7 @@
 using namespace lens::optics;
 
 TEST_CASE("BK7 hits its published index at the d line") {
-    CHECK(refractiveIndex(bk7(), 587.6f) == doctest::Approx(1.5168f).epsilon(1e-3));
+    CHECK(refractiveIndex(bk7(), 587.6f) == doctest::Approx(1.5168f).epsilon(1e-3).scale(0));
 }
 
 TEST_CASE("dispersion is normal, index falls as wavelength rises") {
@@ -76,8 +76,8 @@ TEST_CASE("BK7 reproduces its published Abbe number, pinning the whole curve sha
     const float nd = refractiveIndex(d, 587.56f);
     const float nF = refractiveIndex(d, 486.13f);
     const float nC = refractiveIndex(d, 656.27f);
-    CHECK(nd == doctest::Approx(1.51680f).epsilon(1e-4));
-    CHECK(nF == doctest::Approx(1.52238f).epsilon(1e-4));
-    CHECK(nC == doctest::Approx(1.51432f).epsilon(1e-4));
-    CHECK((nd - 1.0f) / (nF - nC) == doctest::Approx(64.17f).epsilon(2e-3));
+    CHECK(nd == doctest::Approx(1.51680f).epsilon(1e-4).scale(0));
+    CHECK(nF == doctest::Approx(1.52238f).epsilon(1e-4).scale(0));
+    CHECK(nC == doctest::Approx(1.51432f).epsilon(1e-4).scale(0));
+    CHECK((nd - 1.0f) / (nF - nC) == doctest::Approx(64.17f).epsilon(2e-3).scale(0));
 }

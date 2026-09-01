@@ -73,7 +73,17 @@ inline RGB spectrumToRec2020(const Coeffs& c) {
     acc.x /= norm; acc.y /= norm; acc.z /= norm;
     const auto wb = equalEnergyWhitePointScale();
     acc.x *= wb[0]; acc.z *= wb[1];
-    return xyzToRec2020(acc);
+    RGB out = xyzToRec2020(acc);
+    // Highly saturated targets (near the Rec.2020 primaries) sit outside what a bounded
+    // reflectance spectrum can reach -- the model gamut-maps them rather than
+    // reproducing them exactly (accepted limitation, see the design spec), and the
+    // XYZ->Rec2020 matrix can drive a channel slightly negative there. A negative
+    // radiance is meaningless and would propagate as an artefact through the rest of
+    // the pipeline, so clamp it at zero here, at the upsampling boundary.
+    out.r = std::max(0.0f, out.r);
+    out.g = std::max(0.0f, out.g);
+    out.b = std::max(0.0f, out.b);
+    return out;
 }
 
 // Levenberg-Marquardt on three parameters against three residuals.

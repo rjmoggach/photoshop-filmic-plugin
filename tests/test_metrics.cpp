@@ -11,9 +11,9 @@ using namespace lens::targets;
 TEST_CASE("gaussian blur preserves energy and is symmetric") {
     Plane p(64, 64); p.at(32, 32) = 1.0f;
     const Plane b = gaussianBlur(p, 2.0f);
-    CHECK(totalEnergy(b) == doctest::Approx(1.0).epsilon(0.01));
-    CHECK(b.at(30, 32) == doctest::Approx(b.at(34, 32)).epsilon(1e-4));
-    CHECK(b.at(32, 30) == doctest::Approx(b.at(32, 34)).epsilon(1e-4));
+    CHECK(totalEnergy(b) == doctest::Approx(1.0).epsilon(0.01).scale(0));
+    CHECK(b.at(30, 32) == doctest::Approx(b.at(34, 32)).epsilon(1e-4).scale(0));
+    CHECK(b.at(32, 30) == doctest::Approx(b.at(32, 34)).epsilon(1e-4).scale(0));
 }
 
 TEST_CASE("mtf50 of a sharp edge is near the Nyquist limit") {
@@ -27,7 +27,7 @@ TEST_CASE("mtf50 recovers the analytic value for a known gaussian") {
         const float got  = mtf50(crop(e, 24, 24, 80, 80));
         const float want = 0.1874f / sigma;
         CAPTURE(sigma); CAPTURE(got); CAPTURE(want);
-        CHECK(got == doctest::Approx(want).epsilon(0.08));
+        CHECK(got == doctest::Approx(want).epsilon(0.08).scale(0));
     }
 }
 
@@ -42,7 +42,7 @@ TEST_CASE("mtf50 recovers the analytic value with a nonzero dark level") {
         const float got  = mtf50(crop(e, 24, 24, 80, 80));
         const float want = 0.1874f / sigma;
         CAPTURE(sigma); CAPTURE(got); CAPTURE(want);
-        CHECK(got == doctest::Approx(want).epsilon(0.08));
+        CHECK(got == doctest::Approx(want).epsilon(0.08).scale(0));
     }
 }
 
@@ -87,13 +87,13 @@ TEST_CASE("mtf50 falls monotonically as blur grows") {
 
 TEST_CASE("edge position finds the true sub-pixel intercept") {
     const Plane e = slantedEdge(64, 64, 5.0f, 0.0f, 1.0f);
-    CHECK(edgePosition(e) == doctest::Approx(32.0f).epsilon(0.02));
+    CHECK(edgePosition(e) == doctest::Approx(32.0f).epsilon(0.02).scale(0));
 }
 
 TEST_CASE("radial mean of a flat field is flat") {
     const std::vector<float> r = radialMean(flatField(64, 64, 0.6f), 8);
     CHECK(r.size() == 8u);
-    for (float v : r) CHECK(v == doctest::Approx(0.6f).epsilon(1e-4));
+    for (float v : r) CHECK(v == doctest::Approx(0.6f).epsilon(1e-4).scale(0));
 }
 
 TEST_CASE("radial mean detects a synthetic vignette") {
@@ -117,7 +117,7 @@ TEST_CASE("fringe width is zero with no chromatic offset and nonzero with one") 
     Image shifted = toImage(e);                              // move blue by one pixel
     for (int y = 0; y < 96; ++y)
         for (int x = 95; x > 0; --x) shifted.at(x, y, 2) = shifted.at(x - 1, y, 2);
-    CHECK(fringeWidthPx(shifted) == doctest::Approx(-1.0f).epsilon(0.10));
+    CHECK(fringeWidthPx(shifted) == doctest::Approx(-1.0f).epsilon(0.10).scale(0));
 }
 
 TEST_CASE("rotational asymmetry is zero for a symmetric image and large otherwise") {

@@ -32,7 +32,7 @@ TEST_CASE("piston is unity everywhere") {
 TEST_CASE("defocus has the known radial form") {
     CHECK(zernikeRadial(2, 0, 0.0f) == doctest::Approx(-1.0f));   // 2*rho^2 - 1
     CHECK(zernikeRadial(2, 0, 1.0f) == doctest::Approx(1.0f));
-    CHECK(zernike(2, 0, 1.0f, 0.0f) == doctest::Approx(std::sqrt(3.0f)).epsilon(1e-4));
+    CHECK(zernike(2, 0, 1.0f, 0.0f) == doctest::Approx(std::sqrt(3.0f)).epsilon(1e-4).scale(0));
 }
 
 TEST_CASE("spherical has the known radial form") {
@@ -83,7 +83,7 @@ TEST_CASE("coma pins the sign of the standard convention, sine branch (m < 0)") 
 TEST_CASE("coma is antisymmetric about the tangential axis") {
     const float a = zernike(3, 1, 0.8f, 0.0f);
     const float b = zernike(3, 1, 0.8f, float(kPi));
-    CHECK(a == doctest::Approx(-b).epsilon(1e-5));
+    CHECK(a == doctest::Approx(-b).epsilon(1e-5).scale(0));
 }
 
 TEST_CASE("a zero wavefront is flat and a defocused one is not") {
