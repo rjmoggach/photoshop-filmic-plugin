@@ -622,8 +622,11 @@ cheapest tests and catch the most bugs: they fail immediately on kernel
 normalisation errors, on any accidental axis-aligned assumption, and on a
 grain model that has drifted off Newson's density relation.
 
-Golden images are stored as EXR with a perceptual-difference tolerance, not
-byte equality.
+Golden images are stored as PFM (plain float raster, ~30 lines of reader and
+writer) with a perceptual-difference tolerance, not byte equality. The format
+is chosen so that `lenscore`, `lenscli` and the whole test suite carry **zero
+third-party code** — the accuracy work has no dependency to blame. `lensdata`
+JSON parsing is the sole exception and lives outside `lenscore`.
 
 ## 10. Build and distribution
 
