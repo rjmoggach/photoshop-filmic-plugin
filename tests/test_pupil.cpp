@@ -26,13 +26,13 @@ TEST_CASE("a straight-sided hexagon touches 1 at vertices and cos(pi/6) at flats
         lo = std::min(lo, r); hi = std::max(hi, r);
     }
     CHECK(hi == doctest::Approx(1.0f).epsilon(1e-3).scale(0));
-    CHECK(lo == doctest::Approx(std::cos(3.14159265f / 6.0f)).epsilon(1e-3).scale(0));
+    CHECK(lo == doctest::Approx(std::cos(kPi / 6.0f)).epsilon(1e-3).scale(0));
 }
 
 TEST_CASE("curvature interpolates the polygon back to a circle") {
-    const float straight = apertureEdgeRadius(6, 0.0f, 0.0f, 3.14159265f / 6.0f);
-    const float round    = apertureEdgeRadius(6, 1.0f, 0.0f, 3.14159265f / 6.0f);
-    const float half     = apertureEdgeRadius(6, 0.5f, 0.0f, 3.14159265f / 6.0f);
+    const float straight = apertureEdgeRadius(6, 0.0f, 0.0f, kPi / 6.0f);
+    const float round    = apertureEdgeRadius(6, 1.0f, 0.0f, kPi / 6.0f);
+    const float half     = apertureEdgeRadius(6, 0.5f, 0.0f, kPi / 6.0f);
     CHECK(round == doctest::Approx(1.0f));
     CHECK(half > straight);
     CHECK(half < round);

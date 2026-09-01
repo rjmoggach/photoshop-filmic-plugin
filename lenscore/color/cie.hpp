@@ -37,6 +37,15 @@ inline XYZ rec2020ToXyz(const RGB& c) {
              0.0000000000f * c.r + 0.0280726930f * c.g + 1.0609850577f * c.b };
 }
 
+// Rec.2020 relative luminance: exactly the Y row of rec2020ToXyz above,
+// exposed as its own function so a caller that only wants scalar luma (a
+// test harness building a luminance image from a linear Rec.2020 render,
+// say) shares the SAME three coefficients as the colour-management matrix
+// instead of re-deriving a rounded copy that could silently drift from it.
+inline float rec2020Luma(const RGB& c) {
+    return 0.2627002120f * c.r + 0.6779980715f * c.g + 0.0593017165f * c.b;
+}
+
 // Divisor that keeps an equal-energy spectrum neutral under any band layout.
 // Returns the sum of (weight * ybar) across all bands.
 // Used as a divisor: an empty band list (n <= 0) or null pointers return 1.0f (neutral)

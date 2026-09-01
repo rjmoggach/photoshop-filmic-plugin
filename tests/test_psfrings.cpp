@@ -45,14 +45,14 @@ static Plane rotatePlane(const Plane& src, float thetaRad) {
 
 TEST_CASE("rings are built at the requested count") {
     const PsfRings r = buildPsfRings(disc(), [](float) { return Wavefront{}; },
-                                     550.0f, 550.0f, 8, 128);
+                                     550.0f, 550.0f, 8, 128, 1.0f, 33);
     CHECK(r.ring.size() == 8u);
     CHECK(r.gridN == 128);
 }
 
 TEST_CASE("a rotationally symmetric aberration gives the same PSF at every angle") {
     const PsfRings r = buildPsfRings(disc(), [](float t) {
-        Wavefront w; w.defocus = 1.0f * t * t; return w; }, 550.0f, 550.0f, 8, 128);
+        Wavefront w; w.defocus = 1.0f * t * t; return w; }, 550.0f, 550.0f, 8, 128, 1.0f, 33);
     const Plane a = psfAtField(r, 0.8f, 0.0f,             1.0f, 33);
     const Plane b = psfAtField(r, 0.8f, 1.0471975f,       1.0f, 33);   // 60 degrees
     const Plane c = psfAtField(r, 0.8f, 2.7f,             1.0f, 33);
@@ -83,7 +83,7 @@ TEST_CASE("a rotationally symmetric aberration gives the same PSF at every angle
 // centroid or an energy-capture guard did.
 TEST_CASE("coma's tail rotates with the field angle, direction included") {
     const PsfRings r = buildPsfRings(disc(), [](float t) {
-        Wavefront w; w.coma = 1.5f * t; return w; }, 550.0f, 550.0f, 8, 256);
+        Wavefront w; w.coma = 1.5f * t; return w; }, 550.0f, 550.0f, 8, 256, 1.0f, 65);
 
     // theta = 45 degrees: at 0 or 90 degrees a transposed (inverse-flipped)
     // rotation produces the same magnitudes as the correct one, so only an
@@ -120,15 +120,21 @@ TEST_CASE("coma's tail rotates with the field angle, direction included") {
 
 TEST_CASE("sampling exactly on a ring returns that ring's energy") {
     const PsfRings r = buildPsfRings(disc(), [](float t) {
-        Wavefront w; w.defocus = 2.0f * t; return w; }, 550.0f, 550.0f, 5, 128);
+        Wavefront w; w.defocus = 2.0f * t; return w; }, 550.0f, 550.0f, 5, 128, 1.0f, 41);
     auto energy = [](const Plane& p) { double s = 0; for (float v : p.v) s += v; return s; };
     const double onRing = energy(psfAtField(r, 0.5f, 0.0f, 1.0f, 41));   // ring index 2 of 5
     CHECK(onRing > 0.0);
 }
 
 TEST_CASE("resampling to coarser pixels keeps the energy") {
+    // axisEnergy is measured through the FINE window (spp=1, outSize=81) --
+    // the larger of the two windows compared below -- as the reference
+    // capture of the ring's energy; the test's own point is that resampling
+    // the SAME rings to a coarser pixel grid (spp=2, outSize=41) still
+    // conserves total energy relative to that reference, not that either
+    // window happens to capture the whole ring.
     const PsfRings r = buildPsfRings(disc(), [](float) { return Wavefront{}; },
-                                     550.0f, 550.0f, 4, 256);
+                                     550.0f, 550.0f, 4, 256, 1.0f, 81);
     auto energy = [](const Plane& p) { double s = 0; for (float v : p.v) s += v; return s; };
     const double fine   = energy(psfAtField(r, 0.0f, 0.0f, 1.0f, 81));
     const double coarse = energy(psfAtField(r, 0.0f, 0.0f, 2.0f, 41));
@@ -143,7 +149,7 @@ TEST_CASE("resampling to coarser pixels keeps the energy") {
 // captures ring 0's raw energy once, and psfAtField divides by it.
 TEST_CASE("the on-axis kernel sums to 1; a vignetted off-axis kernel sums to less") {
     const PsfRings r = buildPsfRings(vignettingDisc(), [](float) { return Wavefront{}; },
-                                     550.0f, 550.0f, 5, 128);
+                                     550.0f, 550.0f, 5, 128, 1.0f, 127);
     auto energy = [](const Plane& p) { double s = 0; for (float v : p.v) s += v; return s; };
     // outSize spans nearly the whole grid at unit sampling so the resampled
     // kernel captures essentially all of the PSF's energy.
@@ -159,9 +165,9 @@ TEST_CASE("the on-axis kernel sums to 1; a vignetted off-axis kernel sums to les
 // loop even ran. Both must be rejected as programmer error, not tolerated.
 TEST_CASE("buildPsfRings rejects fewer than two rings") {
     auto flat = [](float) { return Wavefront{}; };
-    CHECK_THROWS_AS(buildPsfRings(disc(), flat, 550.0f, 550.0f, 1, 64), std::invalid_argument);
-    CHECK_THROWS_AS(buildPsfRings(disc(), flat, 550.0f, 550.0f, 0, 64), std::invalid_argument);
-    CHECK_THROWS_AS(buildPsfRings(disc(), flat, 550.0f, 550.0f, -3, 64), std::invalid_argument);
+    CHECK_THROWS_AS(buildPsfRings(disc(), flat, 550.0f, 550.0f, 1, 64, 1.0f, 33), std::invalid_argument);
+    CHECK_THROWS_AS(buildPsfRings(disc(), flat, 550.0f, 550.0f, 0, 64, 1.0f, 33), std::invalid_argument);
+    CHECK_THROWS_AS(buildPsfRings(disc(), flat, 550.0f, 550.0f, -3, 64, 1.0f, 33), std::invalid_argument);
 }
 
 // psfAtField takes a PsfRings it did not necessarily build itself (nothing
@@ -180,16 +186,23 @@ TEST_CASE("psfAtField rejects a PsfRings with fewer than two rings") {
 // Fix round 1, finding 3: axisEnergyOf must floor near-zero energy (denormal
 // noise, not just an exact 0.0 sum), or dividing by it would silently blow
 // every kernel up by an arbitrary, physically meaningless factor.
+//
+// Critical 2: axisEnergyOf now measures through the window it is given
+// (gridN, samplesPerPixel, outSize), not the whole ring. Using spp=1 and
+// outSize == gridN reproduces the old "whole grid" case exactly (for a
+// spatially UNIFORM plane, as all three fixtures here are, any window --
+// full or partial -- samples the same constant value everywhere, so the sum
+// is unaffected by which window is used).
 TEST_CASE("axisEnergyOf floors near-zero energy instead of dividing by it") {
-    CHECK(axisEnergyOf(Plane(4, 4)) == doctest::Approx(1.0));   // exact zero: default Plane
+    CHECK(axisEnergyOf(Plane(4, 4), 4, 1.0f, 4) == doctest::Approx(1.0));   // exact zero: default Plane
 
     Plane denormal(4, 4);
     for (float& v : denormal.v) v = 1e-20f;                     // technically > 0, still noise-scale
-    CHECK(axisEnergyOf(denormal) == doctest::Approx(1.0));
+    CHECK(axisEnergyOf(denormal, 4, 1.0f, 4) == doctest::Approx(1.0));
 
     Plane real(4, 4);
     for (float& v : real.v) v = 2.0f;                           // a real, usable energy
-    CHECK(axisEnergyOf(real) == doctest::Approx(32.0));          // 16 pixels * 2.0, well above the floor
+    CHECK(axisEnergyOf(real, 4, 1.0f, 4) == doctest::Approx(32.0));   // 16 pixels * 2.0, well above the floor
 }
 
 // The pipeline-level companion to the above: a pupil clipped almost to
@@ -207,7 +220,7 @@ TEST_CASE("a fully occluded pupil hits the axisEnergy floor and stays finite") {
     PupilParams p = disc();
     p.apertureRadius = 0.001f;   // smaller than any grid pixel's distance from centre at N=64
     const PsfRings r = buildPsfRings(p, [](float) { return Wavefront{}; },
-                                     550.0f, 550.0f, 2, 64);
+                                     550.0f, 550.0f, 2, 64, 1.0f, 17);
     CHECK(r.axisEnergy == doctest::Approx(1.0));   // floor engaged: raw energy was exactly 0
 
     const Plane onAxis = psfAtField(r, 0.0f, 0.0f, 1.0f, 17);
@@ -220,22 +233,24 @@ TEST_CASE("a fully occluded pupil hits the axisEnergy floor and stays finite") {
 TEST_CASE("a pupil clipped almost to nothing still normalises sanely") {
     PupilParams p = disc();
     p.apertureRadius = 0.012f;   // admits only the centremost few pixels at N=128
+    // axisEnergy is now measured through this SAME 65px window (Critical 2),
+    // not the whole 128-grid ring -- so unlike before the fix, this window no
+    // longer truncates real energy relative to its own normalisation: the
+    // measurement IS the normalisation.
     const PsfRings r = buildPsfRings(p, [](float) { return Wavefront{}; },
-                                     550.0f, 550.0f, 2, 128);
+                                     550.0f, 550.0f, 2, 128, 1.0f, 65);
     CHECK(r.axisEnergy > 0.0);
 
     const Plane onAxis = psfAtField(r, 0.0f, 0.0f, 1.0f, 65);
     double s = 0.0;
     for (float v : onAxis.v) { CHECK(std::isfinite(v)); s += v; }
     CHECK(std::isfinite(s));
-    // Genuine physics, not an over-conversion: an aperture this small widens the Airy
-    // core well past this fixed 65px window, so the window itself truncates real
-    // energy -- measured s ~= 0.6824, i.e. ~32% short of 1.0. epsilon(0.4) states that
-    // measured value honestly; it is numerically the same actual tolerance this check
-    // had before the .scale(0) sweep (nominal 0.2 defaulted to scale=1, an effective
-    // 40% at E=1.0), just now arrived at by stating it instead of by an accidental
-    // scale default.
-    CHECK(s == doctest::Approx(1.0).epsilon(0.4).scale(0));
+    // With axisEnergy measured through the same window the kernel is
+    // returned in, the on-axis sum is 1 by construction (modulo floating-
+    // point rounding across the box-average/bilinear resampling) -- this is
+    // no longer testing truncation, just that the small-aperture case stays
+    // finite and sane through that construction.
+    CHECK(s == doctest::Approx(1.0).epsilon(1e-3).scale(0));
 }
 
 // Fix round 2: the on-axis kernel sum being close to 1 was previously verified
@@ -251,6 +266,17 @@ TEST_CASE("a pupil clipped almost to nothing still normalises sanely") {
 // default optics -- across zero aberration through a strong (20-wave) defocus,
 // so a formula or resampling change that only works in one of those regimes
 // fails loudly here instead of shipping.
+//
+// Critical 3: this used to build at gridN = 128, where the 7-pixel kernel
+// (spanning ~127.3 of 128 grid samples at this spp) is essentially the WHOLE
+// ring -- so "sums to 1" held by construction regardless of whether Critical
+// 2's window-consistent axisEnergy fix was even present, and the test proved
+// nothing about the project's actual default. Built at the SHIPPED default
+// psfGrid = 256 instead (lens::Params{}.psfGrid), where the same 7px kernel
+// covers only a fraction of the ring and the pre-fix bug was measured at
+// 0.297 and 0.253 for the two most-aberrated cases here (see the revert
+// experiment in the fix commit's report) -- this is "the project's default
+// optics" the comment above claims, not a coincidentally-matching smaller grid.
 TEST_CASE("the on-axis kernel sums to approximately 1 across aberration strengths") {
     PupilParams pp;
     pp.apertureRadius = 0.25f;   // matches Params::pupilFill's default working aperture
@@ -258,11 +284,13 @@ TEST_CASE("the on-axis kernel sums to approximately 1 across aberration strength
 
     const float lambda = 550.0f, fNumberWide = 2.0f, pupilFill = 0.25f, pixelPitchUm = 5.0f;
     const float spp = pixelPitchUm / (psfSampleSpacingUm(lambda, fNumberWide) * pupilFill);
+    const int   psfGrid = 256;   // lens::Params{}.psfGrid, the shipped default
+    const int   psfKernel = 7;   // lens::Params{}.psfKernel, the shipped default
 
     for (float waves : {0.0f, 1.0f, 6.0f, 20.0f}) {
         const PsfRings r = buildPsfRings(pp, [waves](float) {
-            Wavefront w; w.defocus = waves; return w; }, lambda, 650.0f, 2, 128);
-        const Plane k = psfAtField(r, 0.0f, 0.0f, spp, 7);
+            Wavefront w; w.defocus = waves; return w; }, lambda, 650.0f, 2, psfGrid, spp, psfKernel);
+        const Plane k = psfAtField(r, 0.0f, 0.0f, spp, psfKernel);
         double sum = 0.0; for (float v : k.v) sum += v;
         CAPTURE(waves);
         CHECK(sum == doctest::Approx(1.0).epsilon(0.15).scale(0));

@@ -112,7 +112,27 @@ inline Image render(const Image& src, const Params& p, const color::SpecTable& t
     // (which would put the first Airy zero at a critically undersampled
     // 1.22 samples) at the wide-open stop.
     Params lp = p;
-    lp.pupil.apertureRadius = lp.pupilFill * (lp.vignette.tStopWide / lp.vignette.tStop);
+    const float stopFactor = optics::apertureRadius(lp.vignette);   // tStopWide / tStop
+    lp.pupil.apertureRadius = lp.pupilFill * stopFactor;
+
+    // Critical 1: rEntrance, rExit and sepNorm are configured "in units of
+    // the wide-open aperture radius" (pupil.hpp), i.e. in the SAME raster
+    // units apertureRadius==1.0 would occupy before pupilFill shrinks the
+    // rasterised pupil down to leave FFT headroom. Scaling apertureRadius by
+    // pupilFill above without also rescaling the clip geometry into that
+    // same shrunk coordinate system left the cat's-eye clip circles ~4x too
+    // large to ever touch the (correctly shrunk) aperture disc -- the clip
+    // never fired, so the PSF carried no optical vignetting at all, diverging
+    // from mechanicalFraction by 32% at the corner (measured:
+    // pupilEnergyFraction was 0.93401 at t=0, 0.5 AND 1.0 -- identical).
+    // The entrance/exit pupil barrels and the field-dependent offset do NOT
+    // themselves shrink when the iris (apertureRadius) stops down -- only
+    // apertureRadius carries the tStopWide/tStop factor, matching
+    // mechanicalFraction's own structure (vignette.hpp: `a` shrinks with
+    // tStop, p.rEntrance does not). So the clip geometry gets pupilFill only.
+    lp.pupil.rEntrance *= lp.pupilFill;
+    lp.pupil.rExit     *= lp.pupilFill;
+    lp.pupil.sepNorm   *= lp.pupilFill;
 
     // Per-pixel spectral coefficients plus the scale that rides outside the model.
     std::vector<color::Coeffs> coeff(size_t(w) * h);
@@ -190,10 +210,17 @@ inline Image render(const Image& src, const Params& p, const color::SpecTable& t
             }
 
             // Build the PSF rings ONCE per band, outside the convolution: the
-            // effConvolve callback below only interpolates and rotates.
+            // effConvolve callback below only interpolates and rotates. spp
+            // and lp.psfKernel (this band's samplesPerPixel and output
+            // window) are passed through so buildPsfRings measures axisEnergy
+            // through the SAME window psfAtField actually resamples into --
+            // see psfrings.hpp's Critical-2 fix: measuring it any other way
+            // (e.g. over the whole ring) silently loses energy whenever the
+            // window is narrower than the ring, which it always is at these
+            // defaults (an unaberrated PSF is genuinely sub-pixel).
             const optics::PsfRings rings = optics::buildPsfRings(
                 lp.pupil, [&](float t) { return wavefrontAt(lp, t, lambda); },
-                lambda, lp.lambdaHat, lp.psfRings, lp.psfGrid);
+                lambda, lp.lambdaHat, lp.psfRings, lp.psfGrid, spp, lp.psfKernel);
             band = conv::effConvolve(band, lp.effPatch, [&](float cx, float cy) {
                 const float dx = (cx - frame.cx) / frame.halfDiag;
                 const float dy = (cy - frame.cy) / frame.halfDiag;
@@ -227,9 +254,18 @@ inline Image render(const Image& src, const Params& p, const color::SpecTable& t
                 X[i] / normY * wb[0], Y[i] / normY, Z[i] / normY * wb[1]});
 
             if (lp.doVignette) {
+                // Critical 1b: the pupil clip applied in the PSF stage above
+                // (when doPsf is on) IS the mechanical vignetting -- stage 4
+                // owns it now that Critical 1 makes it actually fire. Also
+                // multiplying optics::vignette() here would double-count
+                // that term (natural falloff * mechanical fraction, on top
+                // of the mechanical fraction the PSF convolution already
+                // applied). This stage therefore applies natural falloff
+                // ONLY; mechanicalFraction/vignette() remain in the library
+                // for the independent closed-form consistency test.
                 const float dx = (float(x) - frame.cx) / frame.halfDiag;
                 const float dy = (float(y) - frame.cy) / frame.halfDiag;
-                const float v = optics::vignette(lp.vignette, std::sqrt(dx * dx + dy * dy));
+                const float v = optics::naturalFalloff(lp.vignette, std::sqrt(dx * dx + dy * dy));
                 c.r *= v; c.g *= v; c.b *= v;
             }
             if (lp.highlightRecovery) {

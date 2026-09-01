@@ -1,12 +1,10 @@
 #include <doctest/doctest.h>
+#include "lenscore/constants.hpp"
 #include "lenscore/optics/zernike.hpp"
 #include <cmath>
 
+using namespace lens;
 using namespace lens::optics;
-
-// M_PI is a POSIX extension, not standard C++; this project builds with
-// CXX_EXTENSIONS OFF and targets MSVC too, so use a local constant instead.
-static constexpr double kPi = 3.14159265358979323846;
 
 // Numerically integrate Z_a * Z_b over the unit disc, divided by the disc area.
 static double innerProduct(int n1, int m1, int n2, int m2) {

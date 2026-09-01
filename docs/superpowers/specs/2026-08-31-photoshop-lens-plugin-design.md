@@ -371,8 +371,15 @@ on the Fourier formulation.
 
 ### 4.5 Stage 6 — vignetting
 
-The pupil clip in stage 4 already removed the optical component. Two terms
-remain:
+**The pupil clip in stage 4 IS the mechanical vignetting**, and this stage must
+therefore NOT apply it again. Earlier drafts of this section listed mechanical
+vignetting here as well as in stage 4, which is double-counting: the barrel
+clipping the entrance and exit pupils is the same physical effect whether you
+compute it by rasterising the pupil or in closed form. The consistency test
+between `pupilEnergyFraction` and `mechanicalFraction` exists precisely to prove
+they are the same quantity — which is the reason only one of them may be applied.
+
+One term remains here:
 
 1. **Natural falloff**, `cos^n(theta)` with `theta = atan(r/f)`. `n = 4` is the
    textbook ideal. **The exponent must be free**: Aggarwal measured three real
@@ -494,7 +501,11 @@ Effects are driven by JSON, so new glass needs no rebuild.
   "pupil": { "r_entrance": 1.0, "r_exit": 0.92, "sep_norm": 0.35,
              "apodization_slope": 0.31 },          // Aggarwal ramp, per radian
 
-  "vignette":  { "natural_exp": 3.6, "mech_vanish_fstop": 4.0 },
+  "vignette":  { "natural_exp": 3.6 },   // the mechanical vanishing stop is DERIVED
+                                          // (mechanicalVanishStop, vignette.hpp) from
+                                          // pupil.r_entrance/sep_norm above, not stored --
+                                          // storing it separately let the two disagree
+                                          // (see Sec. 5.1's note)
 
   // Zernike wavefront coefficients, in waves, as functions of field radius t
   "wavefront": { "petzval": 0.42, "astig": 0.18, "coma": 0.06, "spherical": 0.04 },
@@ -541,7 +552,7 @@ takes either chart photographs or a lens prescription and fits the parameters:
 | Measurement | Input | Fits |
 |---|---|---|
 | Distortion | grid chart | `k1, k2, k3, p1, p2` |
-| Vignette | flat field, **per stop** | `natural_exp`, pupil geometry, `mech_vanish_fstop` |
+| Vignette | flat field, **per stop** | `natural_exp`, pupil geometry (the vanishing stop is reported as a derived diagnostic, not fit as its own free parameter -- see the note below) |
 | Lateral CA | high-contrast point grid | `k_l` |
 | Secondary spectrum | through-focus series on a narrowband target | `correction_nm`, `residual` |
 | Wavefront | slanted edges at 5+ radii, sagittal and tangential | `petzval`, `astig`, `coma`, `spherical` |
@@ -549,6 +560,15 @@ takes either chart photographs or a lens prescription and fits the parameters:
 | Glare | point light in a dark frame, HDR bracket | `floor_stops`, Gaussian widths and weights |
 | From a prescription | radii, thicknesses, glasses | all of the above via Hullin degree-3 |
 | Stock | datasheet H&D, MTF, RMS granularity | layer curves, grain radii |
+
+The stop at which mechanical vignetting vanishes is not stored in the `.lens`
+file as its own field. It is fully determined by `pupil.r_entrance` and
+`pupil.sep_norm` (`mechanicalVanishStop`, `lenscore/optics/vignette.hpp`), so a
+separately-stored value could only ever agree with those two by coincidence --
+an earlier shipped preset stored `4.0` while its own `sep_norm` of `0.35`
+derives `3.077`. Storing only the two independent numbers makes that kind of
+drift impossible; `lensfit` still reports the derived vanishing stop as a
+diagnostic when fitting a preset, it just does not write it back out.
 
 Aggarwal's point-grid protocol is directly reusable: photograph a grid of
 point sources, and each blur patch *is* the PSF at that field position.
@@ -683,7 +703,7 @@ point in black, uniform grey patch ladder.
 |---|---|---|
 | Vignette curve | flat field, radial mean, per stop | matches `.lens` model within 1% |
 | Vignette consistency | stage-4 pupil energy vs stage-6 mechanical term | agree within 1% |
-| Mechanical vanishing | flat field at f/8 vs f/2 | mechanical term ~0 above `mech_vanish_fstop` |
+| Mechanical vanishing | flat field at f/8 vs f/2 | mechanical term ~0 above the derived vanishing stop (`mechanicalVanishStop`) |
 | MTF by field | slanted-edge MTF50 at 5 radii, sagittal and tangential | matches predicted defocus within 5% |
 | Lateral CA | point grid, R-B fringe width vs radius | matches the model within 0.5px |
 | Secondary spectrum | through-focus on narrowband targets | focus error zero at `correction_nm` |

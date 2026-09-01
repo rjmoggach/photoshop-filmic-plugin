@@ -1,7 +1,9 @@
 #include <doctest/doctest.h>
+#include "lenscore/constants.hpp"
 #include "lenscore/optics/vignette.hpp"
 #include <cmath>
 
+using namespace lens;
 using namespace lens::optics;
 
 static VignetteParams defaults() {
@@ -12,10 +14,9 @@ static VignetteParams defaults() {
 }
 
 TEST_CASE("overlap area handles containment and disjointness") {
-    const float pi = 3.14159265f;
     CHECK(circleOverlapArea(5.0f, 1.0f, 1.0f) == doctest::Approx(0.0f));            // disjoint
-    CHECK(circleOverlapArea(0.0f, 1.0f, 2.0f) == doctest::Approx(pi));              // contained
-    CHECK(circleOverlapArea(0.0f, 1.0f, 1.0f) == doctest::Approx(pi));              // coincident
+    CHECK(circleOverlapArea(0.0f, 1.0f, 2.0f) == doctest::Approx(kPi));             // contained
+    CHECK(circleOverlapArea(0.0f, 1.0f, 1.0f) == doctest::Approx(kPi));             // coincident
 }
 
 TEST_CASE("overlap area of two unit circles at unit separation is the known value") {

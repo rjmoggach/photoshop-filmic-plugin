@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -33,7 +34,27 @@ inline size_t tableIndex(int res, int i, int z, int y, int x) {
     return ((((size_t(i) * res + z) * res + y) * res + x)) * 3;
 }
 
+// Real tables ship at res=64. This bounds a corrupted or hostile header well above any
+// table this project would plausibly generate, while keeping the res^3 arithmetic below
+// -- and the allocation it drives -- far from a size_t overflow or a surprise
+// multi-gigabyte allocation. Shared by readTable (below) and buildTable (immediately
+// below this), so a generated table and a loaded table can never disagree about what
+// counts as a valid resolution.
+inline constexpr int kMaxTableRes = 256;
+
 inline SpecTable buildTable(int res) {
+    // res is a caller-controlled dimension that directly sizes an allocation
+    // (3*res^3*3 floats below) -- readTable applies the identical [2, kMaxTableRes]
+    // bound to the same field read from a file header (see below); buildTable's res
+    // reaches this same arithmetic from rgb2spec/main.cpp's atoi(argv[1]), completely
+    // unvalidated before this fix, and res <= 1 also divides by (res - 1) in
+    // axisScale/lookup. This is a programmer/caller error, not untrusted file bytes,
+    // so it throws rather than returning an empty table a caller might not check.
+    if (res < 2 || res > kMaxTableRes) {
+        throw std::invalid_argument(
+            "buildTable: res must be in [2, " + std::to_string(kMaxTableRes) +
+            "]; got " + std::to_string(res));
+    }
     SpecTable t; t.res = res; t.data.assign(size_t(3) * res * res * res * 3, 0.0f);
     for (int i = 0; i < 3; ++i) {
         for (int z = 0; z < res; ++z) {
@@ -130,12 +151,6 @@ inline bool writeTable(const std::string& path, const SpecTable& t) {
     std::fclose(f);
     return true;
 }
-
-// Real tables ship at res=64. This bounds a corrupted or hostile header well above any
-// table this project would plausibly generate, while keeping the res^3 arithmetic below
-// -- and the allocation it drives -- far from a size_t overflow or a surprise
-// multi-gigabyte allocation.
-inline constexpr int kMaxTableRes = 256;
 
 inline std::optional<SpecTable> readTable(const std::string& path) {
     std::FILE* f = std::fopen(path.c_str(), "rb");

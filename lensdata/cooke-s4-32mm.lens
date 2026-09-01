@@ -16,7 +16,7 @@
   "pupil": { "r_entrance": 1.0, "r_exit": 0.92, "sep_norm": 0.35,
              "apodization_slope": 0.31 },
 
-  "vignette":  { "natural_exp": 3.6, "mech_vanish_fstop": 4.0 },
+  "vignette":  { "natural_exp": 3.6 },
 
   "wavefront": { "petzval": 0.42, "astig": 0.18, "coma": 0.06, "spherical": 0.04 },
 

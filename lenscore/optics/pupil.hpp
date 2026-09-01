@@ -51,6 +51,19 @@ inline Plane rasterPupil(const PupilParams& p, float t, int N) {
     if (out.w == 0 || out.h == 0) return out;
     const float d = p.sepNorm * t;
     const float slope = std::clamp(p.apodizationSlope, -kMaxApodizationSlope, kMaxApodizationSlope);
+    // The ramp is Aggarwal's measurement of variation ACROSS THE PUPIL, edge
+    // to edge, so it must be evaluated against a coordinate normalised to the
+    // aperture radius, not the raw [-1,1] grid coordinate `u`. render()
+    // rasterises the aperture at apertureRadius == pupilFill * (tStopWide /
+    // tStop), typically well under 1 (0.25 at the shipped default), so `u`
+    // itself only ever reaches +/- apertureRadius inside the admitted disc --
+    // using it directly would make a measured 31% edge-to-edge variation
+    // (slope 0.31) act as only ~8% (0.31 * 0.25) at that default, silently
+    // shrinking the parameter's real-world meaning by whatever fraction the
+    // FFT sampling headroom happens to be. Dividing by apertureRadius makes
+    // the ramp reach its full, measured amplitude at the true pupil edge
+    // regardless of how small apertureRadius has been scaled for sampling.
+    const float invApertureRadius = (p.apertureRadius > 1e-6f) ? (1.0f / p.apertureRadius) : 0.0f;
     for (int j = 0; j < N; ++j) {
         const float v = 2.0f * float(j) / float(N - 1) - 1.0f;
         for (int i = 0; i < N; ++i) {
@@ -71,9 +84,9 @@ inline Plane rasterPupil(const PupilParams& p, float t, int N) {
 
             // std::max is a defensive floor, not the mechanism that keeps the
             // ramp energy-neutral -- the clamp on slope above already
-            // guarantees 1 + slope*t*u > 0 everywhere in the unit pupil, so
-            // this should never actually trigger.
-            out.at(i, j) = std::max(0.0f, 1.0f + slope * t * u);
+            // guarantees 1 + slope*t*(u/apertureRadius) > 0 everywhere inside
+            // the aperture disc, so this should never actually trigger.
+            out.at(i, j) = std::max(0.0f, 1.0f + slope * t * u * invApertureRadius);
         }
     }
     return out;

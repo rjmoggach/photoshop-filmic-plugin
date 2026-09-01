@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 #include "lenscore/color/spectable.hpp"
 #include <cstdio>
+#include <stdexcept>
 #include <unistd.h>
 
 using namespace lens::color;
@@ -14,6 +15,19 @@ TEST_CASE("table has the documented size") {
     const SpecTable& t = smallTable();
     CHECK(t.res == 12);
     CHECK(t.data.size() == size_t(3) * 12 * 12 * 12 * 3);
+}
+
+// buildTable(res) sizes a 3*res^3*3-float allocation directly from res; res <= 1 also
+// divides by (res - 1) in axisScale/axisBrightness. Both the shipped generator
+// (rgb2spec/main.cpp) and readTable's own bound feed from untrusted-ish external input
+// (a CLI argument, a file header respectively), so buildTable must reject the same
+// range readTable already does rather than sizing an allocation from it unchecked.
+TEST_CASE("buildTable rejects a resolution outside [2, kMaxTableRes]") {
+    CHECK_THROWS_AS(buildTable(0), std::invalid_argument);
+    CHECK_THROWS_AS(buildTable(1), std::invalid_argument);
+    CHECK_THROWS_AS(buildTable(-5), std::invalid_argument);
+    CHECK_THROWS_AS(buildTable(kMaxTableRes + 1), std::invalid_argument);
+    CHECK_NOTHROW(buildTable(2));
 }
 
 TEST_CASE("lookup round trips grey at several brightnesses") {

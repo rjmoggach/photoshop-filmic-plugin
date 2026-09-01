@@ -207,6 +207,12 @@ TEST_CASE("ACCEPTANCE: an achromat fringes green and magenta, not red and blue")
 TEST_CASE("ACCEPTANCE: stopping down removes mechanical vignetting from the render") {
     Params p = base();
     p.doVignette = true;
+    // Critical 1b: mechanical vignetting is owned by the pupil clip in the
+    // PSF stage now that stage 6 applies natural falloff only -- with doPsf
+    // left at base()'s false, stopping down would change NOTHING in the
+    // render (neither term depends on tStop), and this acceptance test would
+    // pass its "stopped > wide" check only by both sides being identical.
+    p.doPsf = true;
     p.vignette.tStop = 2.0f;
     const float wide = radialMean(luminance(render(toImage(flatField(128, 128, 1.0f)), p, table())), 8).back();
     p.vignette.tStop = 8.0f;

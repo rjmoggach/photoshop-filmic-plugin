@@ -1,4 +1,6 @@
 #pragma once
+#include "lenscore/color/cie.hpp"
+#include "lenscore/constants.hpp"
 #include "lenscore/geometry.hpp"
 #include "lenscore/image.hpp"
 #include "lenscore/plane.hpp"
@@ -25,7 +27,7 @@ inline Plane pointGrid(int w, int h, int spacing) {
 // analytically, so the generator adds no blur of its own.
 inline Plane slantedEdge(int w, int h, float angleDeg, float lo, float hi) {
     Plane p(w, h);
-    const float a = angleDeg * 3.14159265358979323846f / 180.0f;
+    const float a = angleDeg * kPi / 180.0f;
     const float tan_a = std::tan(a);
     const float xMid = 0.5f * float(w);
     for (int y = 0; y < h; ++y) {
@@ -69,7 +71,7 @@ inline Plane luminance(const Image& im) {
     Plane p(im.w, im.h);
     for (int y = 0; y < im.h; ++y)
         for (int x = 0; x < im.w; ++x)
-            p.at(x, y) = 0.2627f * im.at(x, y, 0) + 0.6780f * im.at(x, y, 1) + 0.0593f * im.at(x, y, 2);
+            p.at(x, y) = color::rec2020Luma(color::RGB{im.at(x, y, 0), im.at(x, y, 1), im.at(x, y, 2)});
     return p;
 }
 

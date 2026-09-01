@@ -22,15 +22,16 @@ struct PsfRings {
     std::vector<Plane> ring;   // index i is field radius t = i/(rings-1)
     int gridN = 0;
 
-    // Summed energy of ring 0 (the on-axis kernel), computed once when the
-    // rings are built. psfFromPupil deliberately returns a raw, unnormalised
-    // PSF -- its total energy is the optical vignetting -- but a convolution
-    // kernel cannot carry that literally, or it multiplies every image by
-    // N^2 * sum(A^2) (Parseval). Dividing every ring by axisEnergy instead
-    // makes the on-axis kernel sum to 1 and every off-axis kernel sum to the
-    // vignetting fraction *relative to the axis*, which is what a spatially
-    // varying convolution actually wants. See axisEnergyOf for what happens
-    // when ring 0 itself carries no usable energy.
+    // Summed energy of ring 0 (the on-axis kernel), measured through the SAME
+    // window (samplesPerPixel, outSize) psfAtField actually resamples into --
+    // see resampleRingEnergy/axisEnergyOf below for why that "same window"
+    // requirement is load-bearing, not a nicety. psfFromPupil deliberately
+    // returns a raw, unnormalised PSF -- its total energy is the optical
+    // vignetting -- but a convolution kernel cannot carry that literally, or
+    // it multiplies every image by N^2 * sum(A^2) (Parseval). Dividing every
+    // ring by axisEnergy instead makes the on-axis kernel sum to 1 and every
+    // off-axis kernel sum to the vignetting fraction *relative to the axis*,
+    // which is what a spatially varying convolution actually wants.
     double axisEnergy = 1.0;
 };
 
@@ -45,43 +46,6 @@ struct PsfRings {
 // contribute under this pupil model is many orders of magnitude above this
 // floor, so it only ever fires for genuinely degenerate input.
 inline constexpr double kMinAxisEnergy = 1e-6;
-
-// Sum of a ring's raw intensity, floored against kMinAxisEnergy. Below the
-// floor, the fallback is axisEnergy = 1.0: psfAtField's scale becomes just
-// the resampling area factor, i.e. every ring keeps its raw psfFromPupil
-// magnitude, unrescaled, instead of being divided by noise. Exposed as its
-// own function (rather than inlined into buildPsfRings) so the floor is
-// unit-testable directly, without needing a pupil configuration that happens
-// to trigger it.
-inline double axisEnergyOf(const Plane& axisRing) {
-    double s = 0.0;
-    for (float v : axisRing.v) s += v;
-    return (s > kMinAxisEnergy) ? s : 1.0;
-}
-
-inline PsfRings buildPsfRings(const PupilParams& pp,
-                              const std::function<Wavefront(float)>& wavefrontAtT,
-                              float lambdaNm, float lambdaRefNm, int rings, int N) {
-    // psfAtField always reads ring[i0] and ring[i0+1] together, so fewer than
-    // two rings is a contract violation by the caller, not bad input data --
-    // validated before the reserve below, which would otherwise turn a
-    // negative rings into an enormous size_t and attempt a huge allocation.
-    if (rings < 2) {
-        throw std::invalid_argument(
-            "buildPsfRings: rings must be >= 2 (psfAtField interpolates "
-            "between a pair of rings); got " + std::to_string(rings));
-    }
-
-    PsfRings out;
-    out.gridN = N;
-    out.ring.reserve(size_t(rings));
-    for (int i = 0; i < rings; ++i) {
-        const float t = float(i) / float(rings - 1);
-        out.ring.push_back(psfFromPupil(pp, wavefrontAtT(t), lambdaNm, lambdaRefNm, t, N));
-    }
-    out.axisEnergy = axisEnergyOf(out.ring.front());
-    return out;
-}
 
 // Averages the ring's raw grid samples in a k x k box, roughly centred on
 // (cx, cy) (floor-and-offset, not exact sub-sample centring -- "roughly" is
@@ -104,6 +68,114 @@ inline float sampleBoxAverage(const Plane& p, float cx, float cy, int k) {
         }
     }
     return float(sum / double(k) / double(k));
+}
+
+// Resamples `ring` onto an outSize x outSize window using EXACTLY the
+// resampling policy psfAtField applies for a single ring at theta = 0 (the
+// on-axis frame needs no rotation): bilinear point-sampling when the output
+// window is finer than the ring's own grid spacing, box-averaging when it is
+// coarser (see psfAtField below for why). This is the shared building block
+// behind axisEnergyOf and the capture-fraction guard in buildPsfRings, so the
+// window a kernel's energy is MEASURED through and the window it is actually
+// RETURNED in can never independently drift -- which is precisely how
+// Critical 2 happened: axisEnergyOf used to sum the whole ring while
+// psfAtField returned a truncated window.
+inline double resampleRingEnergy(const Plane& ring, int gridN, float samplesPerPixel, int outSize) {
+    const float gc = float(gridN / 2);
+    const float c  = 0.5f * float(outSize - 1);
+    const bool oversampled = samplesPerPixel > 1.0f;
+    const int  boxK = oversampled ? std::max(1, int(std::ceil(samplesPerPixel))) : 1;
+    double sum = 0.0;
+    for (int y = 0; y < outSize; ++y) {
+        for (int x = 0; x < outSize; ++x) {
+            const float dx = (float(x) - c) * samplesPerPixel;
+            const float dy = (float(y) - c) * samplesPerPixel;
+            const float sx = gc + dx, sy = gc + dy;
+            sum += oversampled ? double(sampleBoxAverage(ring, sx, sy, boxK))
+                                : double(sampleBilinear(ring, sx, sy));
+        }
+    }
+    const double areaFactor = oversampled ? double(boxK) * double(boxK)
+                                           : double(samplesPerPixel) * double(samplesPerPixel);
+    return sum * areaFactor;
+}
+
+// Energy of a ring as actually captured by the window it will be resampled
+// into (samplesPerPixel, outSize), floored against kMinAxisEnergy. Below the
+// floor, the fallback is axisEnergy = 1.0: psfAtField's scale becomes just
+// the resampling area factor, i.e. every ring keeps its raw psfFromPupil
+// magnitude, unrescaled, instead of being divided by noise.
+//
+// Critical 2: this used to sum the WHOLE ring (every grid sample), while
+// psfAtField returned only a TRUNCATED window -- so "the on-axis kernel sums
+// to 1" held only when the window happened to cover (nearly) the whole grid,
+// and was silently false otherwise. Measured at the shipped psfGrid=256 with
+// a bare Params{} render (no .lens file): a flat field 0.5 out from centre
+// rendered at 0.140, a silent 3.6x exposure loss. Measuring axisEnergy
+// through the SAME window as the kernel fixes this by construction: the
+// on-axis kernel now sums to 1 at any grid size, and off-axis kernels still
+// carry vignetting as a ratio to it, because both are measured the same way.
+inline double axisEnergyOf(const Plane& axisRing, int gridN, float samplesPerPixel, int outSize) {
+    const double s = resampleRingEnergy(axisRing, gridN, samplesPerPixel, outSize);
+    return (s > kMinAxisEnergy) ? s : 1.0;
+}
+
+// Below this fraction of the on-axis PSF's TOTAL (whole-ring) energy actually
+// landing inside the returned window, the kernel is not merely re-normalised
+// -- the fix above makes the on-axis kernel sum to exactly 1 no matter how
+// little of the true PSF the window covers, so a badly undersized window
+// would otherwise look numerically perfect while silently discarding tail
+// structure instead of exposure (a caller losing most of the real PSF and
+// getting no signal at all is the failure mode this guard exists to
+// eliminate). This project's own shipped defaults (psfGrid=256, psfKernel=7)
+// capture as little as ~25% of the on-axis ring at 20 waves of defocus (see
+// test_psfrings.cpp's "sums to approximately 1 across aberration strengths")
+// and that is the accepted operating range, so the guard sits an order of
+// magnitude below it -- comfortably clear of every configuration this
+// project ships, while still catching a psfKernel/psfGrid/pupilFill
+// combination so undersized that the returned kernel is mostly window edge
+// rather than PSF.
+inline constexpr double kMinOnAxisCapture = 0.10;
+
+inline PsfRings buildPsfRings(const PupilParams& pp,
+                              const std::function<Wavefront(float)>& wavefrontAtT,
+                              float lambdaNm, float lambdaRefNm, int rings, int N,
+                              float samplesPerPixel, int outSize) {
+    // psfAtField always reads ring[i0] and ring[i0+1] together, so fewer than
+    // two rings is a contract violation by the caller, not bad input data --
+    // validated before the reserve below, which would otherwise turn a
+    // negative rings into an enormous size_t and attempt a huge allocation.
+    if (rings < 2) {
+        throw std::invalid_argument(
+            "buildPsfRings: rings must be >= 2 (psfAtField interpolates "
+            "between a pair of rings); got " + std::to_string(rings));
+    }
+
+    PsfRings out;
+    out.gridN = N;
+    out.ring.reserve(size_t(rings));
+    for (int i = 0; i < rings; ++i) {
+        const float t = float(i) / float(rings - 1);
+        out.ring.push_back(psfFromPupil(pp, wavefrontAtT(t), lambdaNm, lambdaRefNm, t, N));
+    }
+
+    const double windowed = resampleRingEnergy(out.ring.front(), N, samplesPerPixel, outSize);
+    out.axisEnergy = (windowed > kMinAxisEnergy) ? windowed : 1.0;
+
+    double fullRing = 0.0;
+    for (float v : out.ring.front().v) fullRing += v;
+    if (fullRing > kMinAxisEnergy) {
+        const double captured = windowed / fullRing;
+        if (captured < kMinOnAxisCapture) {
+            throw std::invalid_argument(
+                "buildPsfRings: the psfKernel window captures only " +
+                std::to_string(captured * 100.0) +
+                "% of the on-axis PSF's energy (need >= " +
+                std::to_string(kMinOnAxisCapture * 100.0) +
+                "%); grow psfKernel or psfGrid, or reduce pupilFill/aberration");
+        }
+    }
+    return out;
 }
 
 // Interpolate between rings by radius, rotate into the radial frame, and

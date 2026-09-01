@@ -8,10 +8,17 @@
 
 using namespace lens;
 
+// Minor cleanup: this used to also advertise "lenscli target <flat|edge|points|star>
+// <out.pfm> [--size N]", a synthetic-target generator that was never implemented --
+// `cmd == "target"` fell straight through to this same usage() text. The generators it
+// would have wrapped (flatField, slantedEdge, pointGrid, siemensStar) live in
+// tests/targets.hpp, a test-only header not part of lenscore; wiring them into the
+// shipped CLI would mean either duplicating them here or pulling a test header into a
+// production binary. Removed the advertisement rather than doing either for a target
+// generator no acceptance row or workflow in the spec actually calls for.
 static int usage() {
     std::fprintf(stderr,
-        "lenscli render <in.pfm> <out.pfm> --lens <file.lens> [--table <t.bin>] [--bands N]\n"
-        "lenscli target <flat|edge|points|star> <out.pfm> [--size N]\n");
+        "lenscli render <in.pfm> <out.pfm> --lens <file.lens> [--table <t.bin>] [--bands N]\n");
     return 2;
 }
 
