@@ -7,7 +7,12 @@ namespace lens::optics {
 struct Dispersion {
     float B[3] = {1.03961212f, 0.231792344f, 1.01046945f};   // BK7
     float C[3] = {0.00600069867f, 0.0200179144f, 103.560653f};
-    std::vector<float> correction_nm{};   // 0 singlet, 2 achromat, 3 apochromat
+    // 0 singlet, 2 achromat, 3 apochromat. Precondition: entries must be
+    // distinct wavelengths (nanometres) -- a repeated (or too-close) entry
+    // would divide by zero in the Lagrange interpolation. focusError guards
+    // this: on a degenerate list it does not silently invent a correction,
+    // it falls back to the raw (uncorrected) error instead.
+    std::vector<float> correction_nm{};
     float residual = 1.0f;
 };
 
@@ -51,6 +56,16 @@ inline float focusError(const Dispersion& d, float lambda_nm, float lambda_ref_n
     // Lagrange interpolation of the raw error at the correction points,
     // in x = 1/lambda^2 with lambda in micrometres.
     auto xOf = [](float nm) { const double u = nm / 1000.0; return 1.0 / (u * u); };
+
+    // Guard: a duplicate (or too-close) correction wavelength makes the
+    // Lagrange denominator below exactly zero, propagating Inf/NaN into
+    // every downstream wavefront. A malformed correction list should not
+    // silently invent a correction, so fall back to the uncorrected error.
+    for (size_t i = 0; i < k; ++i)
+        for (size_t j = i + 1; j < k; ++j)
+            if (std::fabs(xOf(d.correction_nm[i]) - xOf(d.correction_nm[j])) < 1e-9)
+                return raw * d.residual;
+
     const double x = xOf(lambda_nm);
     double corr = 0.0;
     for (size_t i = 0; i < k; ++i) {

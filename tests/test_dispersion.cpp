@@ -58,3 +58,26 @@ TEST_CASE("residual scales the remaining error linearly") {
     Dispersion b = a;                                        b.residual = 0.25f;
     CHECK(focusError(b, 570.0f, 650.0f) == doctest::Approx(0.25f * focusError(a, 570.0f, 650.0f)));
 }
+
+TEST_CASE("a duplicated correction wavelength does not divide by zero") {
+    Dispersion d = bk7();
+    d.correction_nm = {486.1f, 486.1f};   // degenerate: same line twice
+    for (float l : {400.0f, 486.1f, 550.0f, 656.3f, 760.0f})
+        CHECK(std::isfinite(focusError(d, l, 650.0f)));
+}
+
+// A single index value (the d-line test above) only pins the curve's height
+// at one point -- a wrong B/C pair that happens to land near 1.5168 there
+// while distorting the curve's shape elsewhere would still pass. The Abbe
+// number is built from three points (d, F, C), so it pins the shape of the
+// dispersion curve, not just one height on it.
+TEST_CASE("BK7 reproduces its published Abbe number, pinning the whole curve shape") {
+    const Dispersion d = bk7();
+    const float nd = refractiveIndex(d, 587.56f);
+    const float nF = refractiveIndex(d, 486.13f);
+    const float nC = refractiveIndex(d, 656.27f);
+    CHECK(nd == doctest::Approx(1.51680f).epsilon(1e-4));
+    CHECK(nF == doctest::Approx(1.52238f).epsilon(1e-4));
+    CHECK(nC == doctest::Approx(1.51432f).epsilon(1e-4));
+    CHECK((nd - 1.0f) / (nF - nC) == doctest::Approx(64.17f).epsilon(2e-3));
+}
