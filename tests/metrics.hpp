@@ -18,6 +18,21 @@ inline Plane crop(const Plane& p, int x0, int y0, int w, int h) {
     return o;
 }
 
+// fitEdge/mtf50 scan ROWS and locate the edge along x -- they assume a
+// near-VERTICAL edge (an angle near 0 degrees off vertical, in slantedEdge's
+// convention). A near-horizontal edge (angle near 90) is not a rotated
+// version of the same measurement to that code; transpose swaps x and y so a
+// near-horizontal edge becomes near-vertical before mtf50 sees it, making the
+// metric apply. Callers measuring resolution across a horizontal edge must
+// go through this, not feed the untransposed ROI straight to mtf50.
+inline Plane transpose(const Plane& p) {
+    Plane o(p.h, p.w);
+    for (int y = 0; y < p.h; ++y)
+        for (int x = 0; x < p.w; ++x)
+            o.at(y, x) = p.at(x, y);
+    return o;
+}
+
 inline Plane gaussianBlur(const Plane& src, float sigma) {
     const int r = std::max(1, int(std::ceil(4.0f * sigma)));
     std::vector<float> k(size_t(2 * r + 1));

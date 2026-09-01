@@ -31,6 +31,21 @@ TEST_CASE("mtf50 recovers the analytic value for a known gaussian") {
     }
 }
 
+TEST_CASE("transpose recovers the analytic mtf50 for a near-horizontal edge") {
+    // mtf50/fitEdge assume a near-vertical edge (scan rows, locate the edge
+    // along x). An 85-degree slantedEdge is near-HORIZONTAL, so mtf50 cannot
+    // measure it directly -- transpose must convert it to near-vertical
+    // first. Verified standalone, the same way the 5-degree case is verified
+    // in the test above, before trusting transpose anywhere else.
+    for (float sigma : {1.0f, 1.5f, 2.0f, 3.0f}) {
+        const Plane e = gaussianBlur(slantedEdge(128, 128, 85.0f, 0.0f, 1.0f), sigma);
+        const float got  = mtf50(transpose(crop(e, 24, 24, 80, 80)));
+        const float want = 0.1874f / sigma;
+        CAPTURE(sigma); CAPTURE(got); CAPTURE(want);
+        CHECK(got == doctest::Approx(want).epsilon(0.08).scale(0));
+    }
+}
+
 TEST_CASE("mtf50 recovers the analytic value with a nonzero dark level") {
     // Contrast is hi - lo, and MTF50 is contrast-normalised, so a nonzero
     // dark level should not change the answer. This is the regression test
