@@ -1,0 +1,80 @@
+#include <doctest/doctest.h>
+#include "lenscore/optics/lateralca.hpp"
+#include <cmath>
+
+using namespace lens;
+using namespace lens::optics;
+
+static Plane dot(int w, int h, int px, int py) {
+    Plane p(w, h);
+    p.at(px, py) = 1.0f;
+    return p;
+}
+
+TEST_CASE("frame puts t = 1 at the corner and 0 at the centre") {
+    const Frame f = frameOf(101, 51);
+    CHECK(f.cx == doctest::Approx(50.0f));
+    CHECK(f.cy == doctest::Approx(25.0f));
+    const float t = std::sqrt(f.cx * f.cx + f.cy * f.cy) / f.halfDiag;
+    CHECK(t == doctest::Approx(1.0f));
+}
+
+TEST_CASE("inverse radius exactly inverts the forward magnification") {
+    for (float K : {-0.05f, -0.001f, 0.0f, 0.002f, 0.08f}) {
+        for (float tOut : {0.0f, 0.25f, 0.5f, 1.0f}) {
+            const float ts = inverseLateralRadius(K, tOut);
+            CHECK(ts * (1.0f + K * ts) == doctest::Approx(tOut).epsilon(1e-5));
+        }
+    }
+}
+
+TEST_CASE("magnification is unity at the reference wavelength") {
+    CHECK(lateralMagnification(0.02f, 650.0f, 650.0f, 1.0f) == doctest::Approx(1.0f));
+}
+
+TEST_CASE("blue is magnified differently from red, and only off axis") {
+    const float mBlue = lateralMagnification(1e-4f, 450.0f, 650.0f, 1.0f);
+    CHECK(mBlue != doctest::Approx(1.0f));
+    CHECK(lateralMagnification(1e-4f, 450.0f, 650.0f, 0.0f) == doctest::Approx(1.0f));
+}
+
+TEST_CASE("identity warp reproduces the source") {
+    Plane src(33, 21);
+    for (int y = 0; y < 21; ++y)
+        for (int x = 0; x < 33; ++x) src.at(x, y) = float((x * 7 + y * 3) % 11) / 11.0f;
+    const Plane out = warpPlane(src, Distortion{}, 0.0f);
+    for (int y = 0; y < 21; ++y)
+        for (int x = 0; x < 33; ++x) CHECK(out.at(x, y) == doctest::Approx(src.at(x, y)).epsilon(1e-5));
+}
+
+TEST_CASE("positive K pushes a feature outward from the centre") {
+    const int w = 129, h = 129;
+    const Plane src = dot(w, h, 100, 64);          // right of centre
+    // K = 0.01 (the original brief value) cannot move the argmax pixel at all here:
+    // the largest possible shift anywhere on this row is K * 0.5 * halfDiag =~ 0.45px
+    // (t maxes out at cx/halfDiag =~ 0.707 at the row's own edges, short of the corner's
+    // t = 1), which never crosses the 0.5px needed to flip the discrete argmax -- true
+    // for every point on this row, not just x = 100. K = 0.08 (already exercised by the
+    // inverseLateralRadius test above) clears that bound with margin.
+    const Plane out = warpPlane(src, Distortion{}, 0.08f);
+    float best = -1.0f; int bx = 0;
+    for (int x = 0; x < w; ++x) if (out.at(x, 64) > best) { best = out.at(x, 64); bx = x; }
+    CHECK(bx > 100);
+}
+
+TEST_CASE("barrel distortion pulls the corners inward") {
+    Distortion d; d.k1 = -0.10f;
+    float dx = 0, dy = 0;
+    applyDistortion(d, 0.7071f, 0.7071f, dx, dy);
+    CHECK(std::sqrt(dx * dx + dy * dy) < 1.0f);
+}
+
+TEST_CASE("warp conserves total energy to within edge effects") {
+    Plane src(65, 65);
+    for (int y = 20; y < 45; ++y) for (int x = 20; x < 45; ++x) src.at(x, y) = 1.0f;
+    const Plane out = warpPlane(src, Distortion{}, 0.005f);
+    double a = 0, b = 0;
+    for (float v : src.v) a += v;
+    for (float v : out.v) b += v;
+    CHECK(b / a == doctest::Approx(1.0).epsilon(0.03));
+}
