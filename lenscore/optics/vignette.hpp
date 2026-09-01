@@ -29,21 +29,39 @@ struct VignetteParams {
 };
 
 inline float naturalFalloff(const VignetteParams& p, float t) {
+    // A non-positive focal length or sensor half-diagonal is a degenerate lens: there
+    // is no field angle to fall off with. Without this guard, focal_mm == 0 with
+    // t == 0 computes atan(0.0f / 0.0f), which is NaN and would silently propagate
+    // through pow() and vignette() into every pixel. Treat it as "no natural
+    // falloff" (1.0) instead, which is the least surprising value.
+    if (p.focal_mm <= 0.0f || p.sensorHalfDiag_mm <= 0.0f) return 1.0f;
     const float theta = std::atan(t * p.sensorHalfDiag_mm / p.focal_mm);
     return std::pow(std::cos(theta), p.naturalExp);
 }
 
-// Aperture radius in units of the wide-open radius: 1.0 wide open, smaller stopped down.
+// Aperture radius in units of the wide-open radius: 1.0 wide open, smaller stopped
+// down. tStop <= 0 is invalid input; the division below then yields +inf (or, for
+// negative tStop, a non-finite/negative value), which mechanicalFraction handles
+// explicitly rather than relying on IEEE-754 inf/inf arithmetic.
 inline float apertureRadius(const VignetteParams& p) { return p.tStopWide / p.tStop; }
+
+// Sentinel meaning "mechanical vignetting never vanishes for this geometry" —
+// reached when sepNorm >= rEntrance, so the aperture can never fit entirely inside
+// the offset entrance circle at any tStop.
+inline constexpr float kVanishStopNever = 1e9f;
 
 inline float mechanicalVanishStop(const VignetteParams& p) {
     const float room = p.rEntrance - p.sepNorm;
-    return (room > 0.0f) ? p.tStopWide / room : 1e9f;
+    return (room > 0.0f) ? p.tStopWide / room : kVanishStopNever;
 }
 
 inline float mechanicalFraction(const VignetteParams& p, float t) {
     const float a = apertureRadius(p);
     if (a <= 0.0f) return 1.0f;
+    // tStop <= 0 makes `a` non-finite (see apertureRadius above). Treat that
+    // explicitly as full clipping (no light) instead of depending on inf/inf
+    // arithmetic downstream, which a fast-math build could change.
+    if (!std::isfinite(a)) return 0.0f;
     const float d = p.sepNorm * t;
     const float frac = circleOverlapArea(d, a, p.rEntrance) / (kPi * a * a);
     return std::clamp(frac, 0.0f, 1.0f);

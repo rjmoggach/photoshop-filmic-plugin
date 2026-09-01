@@ -70,10 +70,15 @@ TEST_CASE("mechanical vignetting vanishes above f/4, as measured") {
 TEST_CASE("stopping down monotonically reduces mechanical clipping") {
     VignetteParams p = defaults();
     float prev = 0.0f;
+    bool sawStrictIncrease = false;
     for (float s : {2.0f, 2.4f, 2.8f, 3.4f, 4.0f}) {
         p.tStop = s;
         const float m = mechanicalFraction(p, 1.0f);
         CHECK(m >= prev - 1e-6f);
+        if (m > prev + 1e-6f) sawStrictIncrease = true;
         prev = m;
     }
+    // A constant function would satisfy the non-decreasing checks above too;
+    // require a genuine increase somewhere in the sweep to rule that out.
+    CHECK(sawStrictIncrease);
 }
