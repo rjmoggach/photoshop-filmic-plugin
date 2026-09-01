@@ -13,15 +13,15 @@ inline float lobe(float x, float mu, float s1, float s2) {
 }
 
 // Multi-lobe analytic fit to the CIE 1931 2-degree observer.
-inline XYZ cmf(float l) {
+inline XYZ cmf(float lambda_nm) {
     XYZ o;
-    o.x = 1.056f * lobe(l, 599.8f, 37.9f, 31.0f)
-        + 0.362f * lobe(l, 442.0f, 16.0f, 26.7f)
-        - 0.065f * lobe(l, 501.1f, 20.4f, 26.2f);
-    o.y = 0.821f * lobe(l, 568.8f, 46.9f, 40.5f)
-        + 0.286f * lobe(l, 530.9f, 16.3f, 31.1f);
-    o.z = 1.217f * lobe(l, 437.0f, 11.8f, 36.0f)
-        + 0.681f * lobe(l, 459.0f, 26.0f, 13.8f);
+    o.x = 1.056f * lobe(lambda_nm, 599.8f, 37.9f, 31.0f)
+        + 0.362f * lobe(lambda_nm, 442.0f, 16.0f, 26.7f)
+        - 0.065f * lobe(lambda_nm, 501.1f, 20.4f, 26.2f);
+    o.y = 0.821f * lobe(lambda_nm, 568.8f, 46.9f, 40.5f)
+        + 0.286f * lobe(lambda_nm, 530.9f, 16.3f, 31.1f);
+    o.z = 1.217f * lobe(lambda_nm, 437.0f, 11.8f, 36.0f)
+        + 0.681f * lobe(lambda_nm, 459.0f, 26.0f, 13.8f);
     return o;
 }
 
@@ -38,7 +38,11 @@ inline XYZ rec2020ToXyz(const RGB& c) {
 }
 
 // Divisor that keeps an equal-energy spectrum neutral under any band layout.
+// Returns the sum of (weight * ybar) across all bands.
+// Used as a divisor: an empty band list (n <= 0) or null pointers return 1.0f (neutral)
+// to avoid inf/nan poisoning at the call site; an unnormalised spectrum is wrong but finite.
 inline float cieYNormalisation(const float* lambdas, const float* weights, int n) {
+    if (n <= 0 || !lambdas || !weights) return 1.0f;
     float s = 0.0f;
     for (int i = 0; i < n; ++i) s += weights[i] * cmf(lambdas[i]).y;
     return s;

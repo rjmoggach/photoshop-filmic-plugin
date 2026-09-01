@@ -1,6 +1,5 @@
 #include <doctest/doctest.h>
 #include "lenscore/color/cie.hpp"
-#include <vector>
 
 using namespace lens::color;
 
@@ -36,4 +35,8 @@ TEST_CASE("Rec2020 white maps to a neutral chromaticity") {
     const float t = w.x + w.y + w.z;
     CHECK(w.x / t == doctest::Approx(0.3127f).epsilon(0.01));  // D65
     CHECK(w.y / t == doctest::Approx(0.3290f).epsilon(0.01));
+}
+
+TEST_CASE("cieYNormalisation returns neutral divisor on empty input") {
+    CHECK(cieYNormalisation(nullptr, nullptr, 0) == 1.0f);
 }
