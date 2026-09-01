@@ -85,14 +85,19 @@ inline void fft2d(std::vector<Cplx>& a, int w, int h, bool inverse) {
     }
 }
 
-// Swaps quadrants so DC (index 0) lands at the centre. For even w and h
-// this is its own inverse: applying it twice restores the original layout.
-// w and h need not be powers of two, but a.size() must equal w*h — checked
-// before any indexing so a caller-supplied w/h mismatch throws instead of
-// reading or writing out of bounds.
+// Swaps quadrants so DC (index 0) lands at the centre. Built from disjoint
+// pairwise swaps, so it is always its own inverse: applying it twice
+// restores the original layout. w and h need not be powers of two, but both
+// must be even — for an odd height the last row would never be touched by
+// a pairwise swap, so DC would not land at the true centre, silently. That
+// is a programmer error, not a data problem, so it throws rather than
+// returning an asymmetric shift. a.size() must also equal w*h. Both checks
+// run before any indexing, so a bad call throws instead of reading or
+// writing out of bounds.
 inline void fftShift2d(std::vector<Cplx>& a, int w, int h) {
-    if (w <= 0 || h <= 0 || a.size() != size_t(w) * size_t(h)) {
-        throw std::invalid_argument("fftShift2d: buffer size must equal w*h");
+    if (w <= 0 || h <= 0 || (w % 2) != 0 || (h % 2) != 0 ||
+        a.size() != size_t(w) * size_t(h)) {
+        throw std::invalid_argument("fftShift2d: w and h must be even and match buffer size");
     }
 
     const int hx = w / 2, hy = h / 2;

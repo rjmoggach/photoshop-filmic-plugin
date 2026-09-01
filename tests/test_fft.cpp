@@ -64,3 +64,29 @@ TEST_CASE("fftShift moves DC to the centre and is its own inverse for even sizes
     fftShift2d(v, w, h);
     CHECK(std::abs(v[0]) == doctest::Approx(1.0f));
 }
+
+TEST_CASE("fft1d rejects a non-power-of-two length") {
+    std::vector<Cplx> v(48, Cplx(0, 0));
+    CHECK_THROWS_AS(fft1d(v, false), std::invalid_argument);
+}
+
+TEST_CASE("fft2d rejects a non-power-of-two width or height") {
+    std::vector<Cplx> v(size_t(48) * 16, Cplx(0, 0));
+    CHECK_THROWS_AS(fft2d(v, 48, 16, false), std::invalid_argument);
+
+    std::vector<Cplx> v2(size_t(16) * 48, Cplx(0, 0));
+    CHECK_THROWS_AS(fft2d(v2, 16, 48, false), std::invalid_argument);
+}
+
+TEST_CASE("fft2d rejects a buffer whose size does not match w*h") {
+    std::vector<Cplx> v(size_t(16) * 16 - 1, Cplx(0, 0));
+    CHECK_THROWS_AS(fft2d(v, 16, 16, false), std::invalid_argument);
+}
+
+TEST_CASE("fftShift2d rejects odd dimensions") {
+    std::vector<Cplx> v(size_t(9) * 8, Cplx(0, 0));
+    CHECK_THROWS_AS(fftShift2d(v, 9, 8), std::invalid_argument);
+
+    std::vector<Cplx> v2(size_t(8) * 9, Cplx(0, 0));
+    CHECK_THROWS_AS(fftShift2d(v2, 8, 9), std::invalid_argument);
+}
