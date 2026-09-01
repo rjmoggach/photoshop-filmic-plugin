@@ -1,6 +1,6 @@
 #pragma once
 #include <vector>
-#include <cassert>
+#include <cstddef>
 
 namespace lens {
 
