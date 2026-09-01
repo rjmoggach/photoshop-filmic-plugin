@@ -335,6 +335,17 @@ Schuler used an 18x27 support grid on a 21MP image and found bilinear
 interpolation between measured PSFs sufficient; our PSFs are analytic and
 smoother still.
 
+**A precision ceiling from the patch decomposition, measured.** Efficient Filter
+Flow blends overlapping Hann-windowed patches, and near the frame edge a patch
+straddling the corner mixes in a kernel from further inside — which is less
+vignetted. The rendered corner therefore sits above the closed-form prediction
+by up to about 17% at the extreme corner. This is a real consequence of
+patch-based spatially varying convolution, not slack in the model: the two
+disagree because the convolution genuinely averages neighbouring field
+positions. Smaller patches or a narrower window would tighten it at
+proportionate cost. Recorded so the corner tolerance is understood as a
+measured property rather than an unexplained looseness.
+
 **Do not normalise the PSF.** Its total energy *is* the optical vignetting —
 the cat's-eye clip removes light exactly as the barrel does. Schuler makes the
 same point from the correcting side: relaxing the filters from `sum = 1` to
