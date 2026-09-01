@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <stdexcept>
+#include <string>
 
 namespace lens::conv {
 
@@ -37,6 +39,17 @@ inline int nextPow2(int n) { int p = 1; while (p < n) p <<= 1; return p; }
 // into overlapping square patches, each windowed by a separable Hann so the
 // 50%-overlap patches blend back together without a seam, convolved with the
 // kernel that applies at that patch's centre via FFT, and accumulated.
+//
+// Contract on psfAt: the FFT size S is fixed once, from a single probe call
+// at the image centre, before any patch is processed. Every kernel psfAt
+// returns for every other patch must therefore be no larger, in either
+// width or height, than the probe kernel -- equal or smaller is fine, since
+// that only grows the unused wraparound margin S was sized with. A larger
+// kernel would make that patch's own wraparound region overlap real patch
+// data; the modulo arithmetic below keeps every index in bounds regardless,
+// so a violation would not crash or trip an assert, it would just silently
+// add wrong values near that patch. That is checked and thrown on below
+// rather than trusted.
 inline Plane effConvolve(const Plane& src, int patch,
                          const std::function<Plane(float, float)>& psfAt) {
     const int hop = patch / 2;
@@ -51,6 +64,12 @@ inline Plane effConvolve(const Plane& src, int patch,
     for (int oy = -hop; oy < src.h; oy += hop) {
         for (int ox = -hop; ox < src.w; ox += hop) {
             const Plane k = psfAt(float(ox) + patch * 0.5f, float(oy) + patch * 0.5f);
+            if (k.w > probe.w || k.h > probe.h) {
+                throw std::invalid_argument(
+                    "effConvolve: psfAt returned a " + std::to_string(k.w) + "x" +
+                    std::to_string(k.h) + " kernel larger than the " + std::to_string(probe.w) +
+                    "x" + std::to_string(probe.h) + " probe kernel the FFT size was sized from");
+            }
             const int kh2 = k.h / 2, kw2 = k.w / 2;
 
             std::fill(buf.begin(), buf.end(), Cplx(0.0f, 0.0f));

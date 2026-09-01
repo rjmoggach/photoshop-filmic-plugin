@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 #include "lenscore/conv/eff.hpp"
 #include <cmath>
+#include <stdexcept>
 
 using namespace lens;
 using namespace lens::conv;
@@ -74,4 +75,15 @@ TEST_CASE("a varying kernel really does vary across the frame") {
     };
     CHECK(contrast(out, 10, 40) > 0.9);
     CHECK(contrast(out, 90, 120) < 0.5);
+}
+
+TEST_CASE("a psfAt kernel larger than the probe kernel throws") {
+    // The probe is called at the image centre (32, 32) for a 64x64 image and
+    // gets a small kernel there; every other patch gets a larger one, so the
+    // very first non-centre patch violates the "no larger than the probe"
+    // contract and must throw rather than silently corrupt that patch.
+    const Plane src = noise(64, 64);
+    CHECK_THROWS_AS(effConvolve(src, 32, [](float cx, float cy) {
+        return (cx == 32.0f && cy == 32.0f) ? deltaKernel(5) : boxKernel(9);
+    }), std::invalid_argument);
 }
