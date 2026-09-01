@@ -2885,7 +2885,30 @@ TEST_CASE("a rotationally symmetric aberration gives the same PSF at every angle
     }
 }
 
-TEST_CASE("coma's tail follows the radial direction round the frame") {
+TEST_CASE("coma's tail rotates with the field angle, direction included") {
+    // Testing only theta = 0 and 90 degrees CANNOT pin the rotation direction: at those
+    // angles one of sin/cos is exactly zero, so a transposed (inverse-flipped) rotation
+    // produces the same magnitudes with flipped signs -- and abs() hides that entirely.
+    // This form needs no knowledge of coma's absolute sign: measure the centroid on axis,
+    // then assert the centroid at 45 degrees is that same vector ROTATED by 45 degrees.
+    // Self-consistent, and a transposed rotation fails it.
+    const PsfRings r = buildPsfRings(disc(), [](float t) {
+        Wavefront w; w.coma = 1.5f * t; return w; }, 550.0f, 550.0f, 8, 256);
+
+    double x0 = 0, y0 = 0, x45 = 0, y45 = 0;
+    centroid(psfAtField(r, 1.0f, 0.0f, 1.0f, 65), x0, y0);
+    centroid(psfAtField(r, 1.0f, 0.78539816f, 1.0f, 65), x45, y45);   // 45 degrees
+
+    const double c = 0.70710678, sn = 0.70710678;
+    const double wantX = c * x0 - sn * y0;
+    const double wantY = sn * x0 + c * y0;
+    const double mag = std::sqrt(x0 * x0 + y0 * y0);
+    REQUIRE(mag > 0.3);                        // there is a tail to rotate at all
+    CHECK(x45 == doctest::Approx(wantX).epsilon(0.15));
+    CHECK(y45 == doctest::Approx(wantY).epsilon(0.15));
+}
+
+TEST_CASE("coma's tail swaps axis between 0 and 90 degrees") {
     const PsfRings r = buildPsfRings(disc(), [](float t) {
         Wavefront w; w.coma = 1.5f * t; return w; }, 550.0f, 550.0f, 8, 256);
 
@@ -2963,8 +2986,12 @@ inline Plane psfAtField(const PsfRings& r, float t, float thetaRad,
     const float f = ft - float(i0);
 
     const float ct = std::cos(thetaRad), st = std::sin(thetaRad);
-    const float c = 0.5f * float(outSize - 1);
-    const float gc = 0.5f * float(r.gridN - 1);
+    const float c = 0.5f * float(outSize - 1);        // output kernel is odd-sized: centre is (n-1)/2
+    // The RING grid's centre is the INTEGER index gridN/2, not (gridN-1)/2. fftShift2d moves
+    // DC to gridN/2 for even sizes, and psfFromPupil's "peaks dead centre" test pins it there.
+    // Using (gridN-1)/2 mis-registers every ring by half a sample, which shows up as a coma
+    // tail pointing wrongly at 90 degrees while looking fine on axis.
+    const float gc = float(r.gridN / 2);
 
     Plane out(outSize, outSize);
     for (int y = 0; y < outSize; ++y) {
@@ -3080,6 +3107,13 @@ TEST_CASE("Siemens star is rotationally periodic in the spoke count") {
         return double(p.at(int(std::lround(cx + r * std::cos(a))),
                            int(std::lround(cy + r * std::sin(a)))));
     };
+    // Periodicity ALONE is satisfied by a constant image, so first prove the ring varies.
+    double lo = 1e9, hi = -1e9;
+    for (int k = 0; k < 64; ++k) {
+        const double v = sample(2.0 * kPi * k / 64.0);
+        lo = std::min(lo, v); hi = std::max(hi, v);
+    }
+    CHECK(hi - lo > 0.5);                      // there is real angular structure to be periodic
     for (int k = 0; k < 8; ++k) {
         const double a = 0.31 + k * 0.4;
         CHECK(sample(a) == doctest::Approx(sample(a + 2.0 * kPi / 16.0)).epsilon(0.05));
@@ -3097,6 +3131,19 @@ TEST_CASE("plane to image and back is lossless for grey") {
     const Plane a = flatField(8, 8, 0.42f);
     const Plane b = luminance(toImage(a));
     for (int i = 0; i < 64; ++i) CHECK(b.v[i] == doctest::Approx(a.v[i]).epsilon(1e-5));
+}
+
+TEST_CASE("luminance uses the Rec.2020 weights in the right channel order") {
+    // The grey round trip above passes under ANY channel permutation, because all three
+    // channels carry the same value. This one does not: the three weights are distinct,
+    // so a swapped pair changes the answer.
+    Image im(1, 1);
+    im.at(0, 0, 0) = 1.0f; im.at(0, 0, 1) = 0.0f; im.at(0, 0, 2) = 0.0f;
+    CHECK(luminance(im).at(0, 0) == doctest::Approx(0.2627f).epsilon(1e-4));
+    im.at(0, 0, 0) = 0.0f; im.at(0, 0, 1) = 1.0f;
+    CHECK(luminance(im).at(0, 0) == doctest::Approx(0.6780f).epsilon(1e-4));
+    im.at(0, 0, 1) = 0.0f; im.at(0, 0, 2) = 1.0f;
+    CHECK(luminance(im).at(0, 0) == doctest::Approx(0.0593f).epsilon(1e-4));
 }
 ```
 
