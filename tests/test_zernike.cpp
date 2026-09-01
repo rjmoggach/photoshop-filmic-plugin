@@ -4,6 +4,10 @@
 
 using namespace lens::optics;
 
+// M_PI is a POSIX extension, not standard C++; this project builds with
+// CXX_EXTENSIONS OFF and targets MSVC too, so use a local constant instead.
+static constexpr double kPi = 3.14159265358979323846;
+
 // Numerically integrate Z_a * Z_b over the unit disc, divided by the disc area.
 static double innerProduct(int n1, int m1, int n2, int m2) {
     const int NR = 400, NT = 720;
@@ -11,7 +15,7 @@ static double innerProduct(int n1, int m1, int n2, int m2) {
     for (int i = 0; i < NR; ++i) {
         const double rho = (i + 0.5) / NR;
         for (int j = 0; j < NT; ++j) {
-            const double th = 2.0 * M_PI * (j + 0.5) / NT;
+            const double th = 2.0 * kPi * (j + 0.5) / NT;
             const double w = rho;                       // Jacobian
             acc  += w * zernike(n1, m1, float(rho), float(th)) * zernike(n2, m2, float(rho), float(th));
             norm += w;
@@ -51,12 +55,34 @@ TEST_CASE("the basis is orthonormal over the unit disc") {
 
 TEST_CASE("astigmatism separates the sagittal and tangential axes") {
     CHECK(zernike(2, 2, 1.0f, 0.0f) > 0.0f);
-    CHECK(zernike(2, 2, 1.0f, float(M_PI) / 2.0f) < 0.0f);
+    CHECK(zernike(2, 2, 1.0f, float(kPi) / 2.0f) < 0.0f);
+}
+
+// Coma sign, derived from the standard Zernike definition (not from the code
+// under test):
+//   R_3^1(rho) = 3*rho^3 - 2*rho          (textbook coma radial polynomial)
+//   R_n^m(1)   = 1 for every valid (n, m) (standard Zernike edge property:
+//                3*1 - 2*1 = 1, confirming the formula at rho = 1)
+//   N_3^1      = sqrt(2*(3+1) / (1 + 0))  = sqrt(8)   (m != 0, no delta_m0 term)
+// OSA/ANSI convention: for m >= 0, Z_n^m = N * R_n^m * cos(m*theta);
+//                       for m <  0, Z_n^m = N * R_n^|m| * sin(|m|*theta).
+// At rho = 1, theta = 0:      cos(0) = 1        -> Z(3, 1, 1, 0)        = +sqrt(8)
+// At rho = 1, theta = pi/2:   sin(pi/2) = 1      -> Z(3,-1, 1, pi/2)    = +sqrt(8)
+// At rho = 1, theta = -pi/2:  sin(-pi/2) = -1    -> Z(3,-1, 1, -pi/2)   = -sqrt(8)
+// A flipped cosine/sine sign, or a flipped angular frame, changes these exact
+// values -- unlike a bare antisymmetry check, which any such flip still passes.
+TEST_CASE("coma pins the sign of the standard convention, cosine branch") {
+    CHECK(zernike(3, 1, 1.0f, 0.0f) == doctest::Approx(std::sqrt(8.0f)));
+}
+
+TEST_CASE("coma pins the sign of the standard convention, sine branch (m < 0)") {
+    CHECK(zernike(3, -1, 1.0f, float(kPi) / 2.0f) == doctest::Approx(std::sqrt(8.0f)));
+    CHECK(zernike(3, -1, 1.0f, -float(kPi) / 2.0f) == doctest::Approx(-std::sqrt(8.0f)));
 }
 
 TEST_CASE("coma is antisymmetric about the tangential axis") {
     const float a = zernike(3, 1, 0.8f, 0.0f);
-    const float b = zernike(3, 1, 0.8f, float(M_PI));
+    const float b = zernike(3, 1, 0.8f, float(kPi));
     CHECK(a == doctest::Approx(-b).epsilon(1e-5));
 }
 
