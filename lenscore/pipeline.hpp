@@ -157,31 +157,28 @@ inline Image render(const Image& src, const Params& p, const color::SpecTable& t
             // coarser pixels keeps the energy": a LARGER samplesPerPixel is explicitly
             // the coarser-pixel case).
             //
-            // The grid-sample size is psfSampleSpacingUm(lambda, fNumberWide) DIVIDED
-            // by pupilFill, not multiplied: psfSampleSpacingUm is calibrated for a
-            // pupil that fills the whole psfGrid FFT (apertureRadius == 1). Shrinking
-            // the pupil to pupilFill of the grid (see the apertureRadius line above)
-            // packs the SAME physical aperture into a smaller fraction of the same
-            // N-sample grid, i.e. represents it at higher sample density -- one grid
-            // sample now covers LESS physical distance, not more. Verified two ways:
-            // multiplying (matching an apertureRadius==1 reference literally) pushes
-            // samplesPerPixel past 14 at these parameters and every kernel from 5 to
-            // grid-filling overshoots total energy by 1-2 orders of magnitude,
-            // independent of psfGrid -- i.e. it is not a grid-too-small/clamping
-            // artifact, the ratio itself is wrong. Dividing lands samplesPerPixel
-            // near 1-2 (the diffraction pattern really does span a few output pixels
-            // at these test parameters) and, with a kernel sized generously enough
-            // to cover it (see maxKernel below), reproduces energy conservation to
-            // within a fraction of a percent, independent of psfGrid.
-            const float gridSampleUm = optics::psfSampleSpacingUm(lambda, lp.fNumberWide) / lp.pupilFill;
+            // The grid-sample size is psfSampleSpacingUm(lambda, fNumberWide) MULTIPLIED
+            // by pupilFill: psfSampleSpacingUm is calibrated for a pupil that fills the
+            // whole psfGrid FFT (apertureRadius == 1), and pupilFill (see the
+            // apertureRadius line above) is exactly how much smaller than that our
+            // actual working aperture is. This makes samplesPerPixel large (an
+            // unaberrated PSF is genuinely sub-pixel at this project's default optics),
+            // which used to break energy conservation for the *unaberrated* case only --
+            // that was a resampling bug in psfAtField (point-sampling a sub-pixel PSF
+            // aliases), fixed at the source in psfrings.hpp, not by changing this ratio.
+            // Measured across bare-Airy through 20-wave defocus with that fix in place,
+            // this (multiplying) is the formula that holds energy conservation in every
+            // aberrated regime -- the regime this project actually renders -- not just
+            // the unaberrated one; see psfrings.hpp's psfAtField for the measurements.
+            const float gridSampleUm = optics::psfSampleSpacingUm(lambda, lp.fNumberWide) * lp.pupilFill;
             const float spp = lp.pixelPitchUm / gridSampleUm;
 
             // The kernel's physical footprint (psfKernel pixels) cannot exceed the
-            // ring's own grid footprint (psfGrid samples), or psfAtField reads
-            // clamped edge samples for its outer pixels and energy conservation
-            // breaks silently. Fail loudly instead -- same policy as psfrings.hpp's
-            // "rings must be >= 2" check -- rather than quietly truncating a
-            // request the caller's own parameters cannot support.
+            // ring's own grid footprint (psfGrid samples), or psfAtField's box average
+            // (see psfrings.hpp) draws from clamped edge samples for its outer pixels
+            // and energy conservation breaks. Fail loudly instead -- same policy as
+            // psfrings.hpp's "rings must be >= 2" check -- rather than quietly
+            // truncating a request the caller's own parameters cannot support.
             int maxKernel = int(std::floor(lp.psfGrid * gridSampleUm / lp.pixelPitchUm));
             if (maxKernel % 2 == 0) --maxKernel;
             if (lp.psfKernel > maxKernel) {

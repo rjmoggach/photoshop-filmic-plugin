@@ -83,10 +83,54 @@ inline PsfRings buildPsfRings(const PupilParams& pp,
     return out;
 }
 
+// Averages the ring's raw grid samples in a k x k box, roughly centred on
+// (cx, cy) (floor-and-offset, not exact sub-sample centring -- "roughly" is
+// the honest word for it), clamped at the ring's edge the same way
+// sampleBilinear is. Used only when one output pixel covers MORE than one
+// ring sample -- see psfAtField's oversampled branch below -- as a simple,
+// deliberately unrigorous anti-alias: a point sample of a PSF narrower than
+// the box would alias (miss it, or land squarely on its peak), and a box
+// average is the cheapest fix that does not.
+inline float sampleBoxAverage(const Plane& p, float cx, float cy, int k) {
+    const int cxi = int(std::floor(cx));
+    const int cyi = int(std::floor(cy));
+    const int half = k / 2;
+    double sum = 0.0;
+    for (int j = 0; j < k; ++j) {
+        const int yy = std::clamp(cyi - half + j, 0, p.h - 1);
+        for (int i = 0; i < k; ++i) {
+            const int xx = std::clamp(cxi - half + i, 0, p.w - 1);
+            sum += double(p.at(xx, yy));
+        }
+    }
+    return float(sum / double(k) / double(k));
+}
+
 // Interpolate between rings by radius, rotate into the radial frame, and
 // resample from PSF grid samples to image pixels. Energy is conserved by
 // scaling with the area ratio, then divided by axisEnergy so the on-axis
 // kernel sums to 1 and off-axis kernels carry vignetting as a ratio to it.
+//
+// Which resampling is correct depends on which is finer, the output pixel or
+// the ring's own grid sample:
+//   samplesPerPixel <= 1: the output pixel is FINER than a ring sample (a
+//     well-resolved PSF, or heavy oversampling), so bilinear point-sampling
+//     the ring is the right thing to do -- there is no sub-pixel footprint to
+//     average over.
+//   samplesPerPixel >  1: the output pixel is COARSER than a ring sample --
+//     at the defaults, an unaberrated diffraction spot is genuinely narrower
+//     than one output pixel. Point-sampling a function narrower than the
+//     sample spacing aliases: the single sample is whatever the ring happens
+//     to be exactly at the pixel centre, and the areaFactor below then
+//     multiplies THAT by the whole pixel's area, over- or under-counting by
+//     however far that one sample was from the pixel's true average.
+//     Averaging the ring over the pixel's own footprint (sampleBoxAverage)
+//     instead of point-sampling it removes that aliasing; this was verified
+//     by measuring the on-axis kernel's total energy (which must sum to 1)
+//     across bare-Airy through 20-wave-defocus PSFs -- point-sampling
+//     conserved energy only for the aberrated (several-pixel-wide) cases and
+//     overshot the unaberrated, sub-pixel case by 16x; box-averaging holds
+//     within a couple of percent at every one of them (see test_psfrings.cpp).
 inline Plane psfAtField(const PsfRings& r, float t, float thetaRad,
                         float samplesPerPixel, int outSize) {
     // r was not necessarily built by buildPsfRings, so its invariant (at
@@ -115,6 +159,9 @@ inline Plane psfAtField(const PsfRings& r, float t, float thetaRad,
     // dependent asymmetry once the frame is rotated into place.
     const float gc = float(r.gridN / 2);
 
+    const bool oversampled = samplesPerPixel > 1.0f;
+    const int  boxK = oversampled ? std::max(1, int(std::ceil(samplesPerPixel))) : 1;
+
     Plane out(outSize, outSize);
     for (int y = 0; y < outSize; ++y) {
         for (int x = 0; x < outSize; ++x) {
@@ -126,14 +173,29 @@ inline Plane psfAtField(const PsfRings& r, float t, float thetaRad,
             const float ux =  ct * dx + st * dy;
             const float uy = -st * dx + ct * dy;
             const float sx = gc + ux, sy = gc + uy;
-            const float a = sampleBilinear(r.ring[i0],     sx, sy);
-            const float b = sampleBilinear(r.ring[i0 + 1], sx, sy);
+            float a, b;
+            if (oversampled) {
+                a = sampleBoxAverage(r.ring[i0],     sx, sy, boxK);
+                b = sampleBoxAverage(r.ring[i0 + 1], sx, sy, boxK);
+            } else {
+                a = sampleBilinear(r.ring[i0],     sx, sy);
+                b = sampleBilinear(r.ring[i0 + 1], sx, sy);
+            }
             out.at(x, y) = (1.0f - f) * a + f * b;
         }
     }
-    // One output pixel now covers samplesPerPixel^2 grid samples; dividing by
-    // axisEnergy makes the on-axis kernel integrate to 1 (see PsfRings above).
-    const float scale = (samplesPerPixel * samplesPerPixel) / float(r.axisEnergy);
+    // samplesPerPixel <= 1: out.at() holds a point sample; one output pixel
+    // covers samplesPerPixel^2 grid samples, so that is the area factor.
+    // samplesPerPixel >  1: out.at() holds a MEAN over boxK^2 grid samples
+    // (sampleBoxAverage above). Multiplying by samplesPerPixel^2 here as well
+    // would double-count the averaging -- the mean already divided by boxK^2,
+    // so the area factor that turns it back into the discrete SUM of ring
+    // energy the pixel's box covers is boxK^2, not samplesPerPixel^2 (they
+    // are close but not identical: boxK = ceil(samplesPerPixel)). That SUM,
+    // as a fraction of axisEnergy (itself a discrete sum over the whole
+    // ring), is what actually makes the on-axis kernel integrate to 1.
+    const float areaFactor = oversampled ? float(boxK * boxK) : (samplesPerPixel * samplesPerPixel);
+    const float scale = areaFactor / float(r.axisEnergy);
     for (float& v : out.v) v *= scale;
     return out;
 }

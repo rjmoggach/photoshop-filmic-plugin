@@ -221,3 +221,34 @@ TEST_CASE("a pupil clipped almost to nothing still normalises sanely") {
     CHECK(std::isfinite(s));
     CHECK(s == doctest::Approx(1.0).epsilon(0.2));
 }
+
+// Fix round 2: the on-axis kernel sum being close to 1 was previously verified
+// at exactly one configuration (Wavefront{}, i.e. zero aberration) -- which is
+// the one PSF shape this project's own reason for existing (aberrated glass)
+// never actually renders. A resampling formula tuned only against that single,
+// degenerate case (a bare Airy disk, genuinely narrower than one output pixel
+// at this project's default optics) held for it alone and overshot total
+// energy by roughly an order of magnitude the moment real aberration widened
+// the PSF to several pixels across. This exercises the same samplesPerPixel >
+// 1 (oversampled, box-averaged) regime render() actually uses -- pixelPitchUm
+// / (psfSampleSpacingUm(lambda, fNumberWide) * pupilFill) at the project's
+// default optics -- across zero aberration through a strong (20-wave) defocus,
+// so a formula or resampling change that only works in one of those regimes
+// fails loudly here instead of shipping.
+TEST_CASE("the on-axis kernel sums to approximately 1 across aberration strengths") {
+    PupilParams pp;
+    pp.apertureRadius = 0.25f;   // matches Params::pupilFill's default working aperture
+    pp.rEntrance = 1e6f; pp.rExit = 1e6f; pp.sepNorm = 0.0f;
+
+    const float lambda = 550.0f, fNumberWide = 2.0f, pupilFill = 0.25f, pixelPitchUm = 5.0f;
+    const float spp = pixelPitchUm / (psfSampleSpacingUm(lambda, fNumberWide) * pupilFill);
+
+    for (float waves : {0.0f, 1.0f, 6.0f, 20.0f}) {
+        const PsfRings r = buildPsfRings(pp, [waves](float) {
+            Wavefront w; w.defocus = waves; return w; }, lambda, 650.0f, 2, 128);
+        const Plane k = psfAtField(r, 0.0f, 0.0f, spp, 7);
+        double sum = 0.0; for (float v : k.v) sum += v;
+        CAPTURE(waves);
+        CHECK(sum == doctest::Approx(1.0).epsilon(0.15).scale(0));
+    }
+}

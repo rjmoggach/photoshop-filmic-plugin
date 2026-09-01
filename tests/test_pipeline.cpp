@@ -91,7 +91,7 @@ TEST_CASE("a rotationally symmetric input stays symmetric through the whole pipe
     p.highlightRecovery = false;
     p.doLateralCa = true; p.doPsf = true; p.doVignette = true;
     p.lateralK = 2e-5f; p.petzval = 0.8f; p.spherical = 0.3f;
-    p.psfGrid = 128; p.psfRings = 6; p.psfKernel = 65; p.effPatch = 128;
+    p.psfGrid = 256; p.psfRings = 6; p.psfKernel = 7; p.effPatch = 64;
 
     Plane sym(65, 65);
     const Frame f = frameOf(65, 65);
@@ -111,7 +111,7 @@ TEST_CASE("energy is conserved across the spectral and convolution stages") {
     p.petzval = 0.0f; p.astig = 0.0f; p.coma = 0.0f; p.spherical = 0.0f;
     p.dispersion.residual = 0.0f;
     p.pupil.rEntrance = 1e6f; p.pupil.rExit = 1e6f; p.pupil.sepNorm = 0.0f;
-    p.psfGrid = 128; p.psfRings = 4; p.psfKernel = 65; p.effPatch = 128;
+    p.psfGrid = 256; p.psfRings = 4; p.psfKernel = 7; p.effPatch = 64;
 
     Plane blob(64, 64);
     for (int y = 20; y < 44; ++y) for (int x = 20; x < 44; ++x) blob.at(x, y) = 1.0f;
@@ -153,7 +153,7 @@ TEST_CASE("a coloured input keeps its hue through the spectral stage at both ban
 }
 
 TEST_CASE("render rejects a psfKernel the grid cannot cover") {
-    // psfGrid=8 covers only a handful of micrometres at these defaults; psfKernel=65
+    // psfGrid=8 covers only a handful of micrometres at these defaults; psfKernel=7
     // (the Params default) demands far more than that grid can supply at any sampled
     // wavelength. Programmer error should fail loudly here, the same policy
     // psfrings.hpp already applies to "rings must be >= 2", rather than silently

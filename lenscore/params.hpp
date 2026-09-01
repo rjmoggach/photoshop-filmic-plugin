@@ -46,34 +46,33 @@ struct Params {
                                   // 1.0 would put the first Airy zero at 1.22 samples --
                                   // critically undersampled. Also scales the sample spacing.
     // psfGrid and psfKernel must satisfy, at every sampled wavelength:
-    //   psfKernel * pixelPitchUm <= psfGrid * psfSampleSpacingUm(lambda, fNumberWide) / pupilFill
+    //   psfKernel * pixelPitchUm <= psfGrid * psfSampleSpacingUm(lambda, fNumberWide) * pupilFill
     // (see lenscore/pipeline.hpp, "spp" and the psfKernel-vs-grid validation it does per
     // band) -- the kernel's physical footprint (psfKernel pixels wide) cannot exceed the
-    // PSF ring's own FFT grid footprint (psfGrid samples wide, each psfSampleSpacingUm /
-    // pupilFill micrometres -- pupilFill DIVIDES here because it shrinks the illuminated
-    // pupil into a fraction of the grid, i.e. represents the same physical aperture at
-    // higher sample density, not lower; see pipeline.hpp for the verification), or the
-    // convolution reads clamped edge samples of the ring and energy conservation breaks.
-    // render() throws std::invalid_argument if a caller's psfKernel violates this for the
-    // wavelength actually being rendered, rather than silently truncating.
+    // PSF ring's own FFT grid footprint (psfGrid samples wide, each psfSampleSpacingUm *
+    // pupilFill micrometres -- pupilFill MULTIPLIES here: psfSampleSpacingUm is
+    // calibrated for a pupil filling the whole grid, and pupilFill is how much smaller
+    // than that the actual working aperture is; see pipeline.hpp for the reasoning), or
+    // psfAtField's box average (see psfrings.hpp) draws from clamped edge samples and
+    // energy conservation breaks. render() throws std::invalid_argument if a caller's
+    // psfKernel violates this for the wavelength actually being rendered, rather than
+    // silently truncating.
     //
-    // Getting the coverage condition right is necessary but not sufficient: the kernel
-    // also has to be wide enough, in OUTPUT PIXELS, to actually capture the diffraction
-    // pattern's energy, or it just conserves energy for a kernel that's throwing most of
-    // that energy away. At a representative mid-visible wavelength (550nm) with the
-    // sampling parameters above, one grid sample is psfSampleSpacingUm(550,2.0)/0.25 =
-    // 4.4um, so the pattern spans a few output pixels (4.4/5.0 grid samples per pixel) --
-    // not sub-pixel, not dozens of pixels wide. Measured against the energy-conservation
-    // test's own aberration-free configuration across its 3 sampled bands (447-713nm),
-    // psfKernel=65 recovers >99% of the on-axis kernel's energy at every one of them,
-    // comfortably inside the coverage bound above (grid=128 clears up to 111 pixels at
-    // 550nm, 91 at the bluest sampled band) -- so 65 was chosen as a default with real
-    // margin on both sides, not the tightest value that merely passes.
+    // At these defaults an unaberrated PSF is genuinely sub-pixel (samplesPerPixel is
+    // large, ~18 at 550nm: gridSampleUm = 550e-3 * 2.0 * 0.25 = 0.275um, vs a 5um
+    // pixel) -- that is real, not a bug, and is exactly why psfAtField box-averages
+    // rather than point-samples once samplesPerPixel > 1 (see psfrings.hpp). floor(128 *
+    // 0.275 / 5.0) = 7, already odd. 7 pixels covers 7 * 18.18 ~= 127 ring samples --
+    // ample for the aberrated PSFs this project actually renders (a several-pixel-wide
+    // defocused spot is a much easier target than the unaberrated case the bound is
+    // computed from). Measured directly (see psfrings.hpp's psfAtField and
+    // test_psfrings.cpp): with the box-average fix, this configuration holds the
+    // on-axis kernel's energy within a couple of percent of 1 from bare Airy through
+    // 20 waves of defocus.
     int   psfGrid      = 128;   // pupil FFT grid, power of two
     int   psfRings     = 12;
-    int   psfKernel    = 65;    // odd; see the derivation above
-    int   effPatch     = 128;   // power of two; must be >= psfKernel for effConvolve's
-                                  // per-patch window to comfortably contain the kernel
+    int   psfKernel    = 7;     // odd; see the derivation above
+    int   effPatch     = 64;    // power of two
 };
 
 }  // namespace lens
