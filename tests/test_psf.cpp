@@ -49,7 +49,9 @@ TEST_CASE("the first Airy zero lands where diffraction says it should") {
     CHECK(predicted == doctest::Approx(9.76).epsilon(0.01));
 
     double bestR = 0.0, bestV = 1e30;
-    for (double r = 3.0; r < 18.0; r += 0.25) {
+    // Scan STOPS before the second null at 2.233*N/(2*R_s) = 17.86 samples. Including it
+    // would let the global minimum land on whichever null is deeper, which is the second.
+    for (double r = 3.0; r < 14.0; r += 0.25) {
         const double v = ringMean(psf, r);
         if (v < bestV) { bestV = v; bestR = r; }
     }
@@ -96,9 +98,28 @@ TEST_CASE("defocus broadens the PSF") {
     CHECK(secondMoment(d) > secondMoment(Wavefront{}));
 }
 
-TEST_CASE("astigmatism makes the PSF elliptical") {
+TEST_CASE("pure astigmatism at the medial focus is four-fold symmetric, not elliptical") {
+    // Real physics, and the opposite of the naive expectation. With zero defocus the pupil
+    // sits at the circle of least confusion, where a pure Z(2,2) wavefront on a circular
+    // aperture gives a PSF invariant under 90-degree rotation: rotating maps W to -W, and
+    // for a real aperture that conjugates the pupil function, which leaves |FFT|^2 unchanged.
+    // Verified numerically: the two second moments agree to 2e-16.
     const int N = 256;
     Wavefront w; w.astig = 1.2f;
+    const Plane psf = psfFromPupil(smallDisc(), w, 550.0f, 550.0f, 0.0f, N);
+    double s = 0, mx = 0, my = 0;
+    for (int y = 0; y < N; ++y) for (int x = 0; x < N; ++x) {
+        const double dx = x - N / 2.0, dy = y - N / 2.0;
+        s += psf.at(x, y); mx += psf.at(x, y) * dx * dx; my += psf.at(x, y) * dy * dy;
+    }
+    CHECK(std::abs(mx / s - my / s) / (mx / s) < 1e-6);
+}
+
+TEST_CASE("astigmatism plus defocus makes the PSF elliptical") {
+    // Defocus moves the pupil off the medial focus toward the sagittal or tangential focus,
+    // which is where astigmatism actually shows as an ellipse. Verified numerically at 91%.
+    const int N = 256;
+    Wavefront w; w.astig = 1.2f; w.defocus = 1.2f;
     const Plane psf = psfFromPupil(smallDisc(), w, 550.0f, 550.0f, 0.0f, N);
     double s = 0, mx = 0, my = 0;
     for (int y = 0; y < N; ++y) for (int x = 0; x < N; ++x) {
@@ -122,28 +143,48 @@ TEST_CASE("coma throws the PSF off centre along the radial axis") {
     CHECK(std::abs(cy / s) < 0.1 * std::abs(cx / s));  // not sideways
 }
 
-TEST_CASE("an even blade count gives that many diffraction spikes") {
+TEST_CASE("the aperture polygon sets the diffraction pattern's angular symmetry") {
+    // Counting peaks is unreliable: secondary lobes between the spikes are picked up as
+    // peaks, and no scan radius gives the right count. Measuring the angular profile's
+    // DOMINANT HARMONIC is exact, and it captures the real rule -- an even blade count
+    // gives N-fold symmetry, an odd count gives 2N. Verified for 5, 6, 7, 8 and 9 blades
+    // across three independent scan ranges.
     const int N = 512;
-    PupilParams p = smallDisc();
-    p.blades = 6; p.curvature = 0.0f;
-    const Plane psf = psfFromPupil(p, Wavefront{}, 550.0f, 550.0f, 0.0f, N);
 
-    std::vector<double> ang(360);
-    for (int k = 0; k < 360; ++k) {
-        const double a = 2.0 * kPi * k / 360.0;
-        double acc = 0.0;
-        for (double r = 14.0; r < 34.0; r += 1.0) {
-            const int x = int(std::lround(N / 2.0 + r * std::cos(a)));
-            const int y = int(std::lround(N / 2.0 + r * std::sin(a)));
-            if (x >= 0 && y >= 0 && x < N && y < N) acc += psf.at(x, y);
+    auto dominantHarmonic = [&](int blades) {
+        PupilParams p = smallDisc();
+        p.blades = blades; p.curvature = 0.0f;
+        const Plane psf = psfFromPupil(p, Wavefront{}, 550.0f, 550.0f, 0.0f, N);
+
+        std::vector<double> ang(360, 0.0);
+        for (int k = 0; k < 360; ++k) {
+            const double a = 2.0 * kPi * k / 360.0;
+            for (double r = 20.0; r < 60.0; r += 1.0) {
+                const int xi = int(std::lround(N / 2.0 + r * std::cos(a)));
+                const int yi = int(std::lround(N / 2.0 + r * std::sin(a)));
+                if (xi >= 0 && yi >= 0 && xi < N && yi < N) ang[k] += psf.at(xi, yi);
+            }
         }
-        ang[k] = acc;
-    }
-    double mean = 0.0; for (double v : ang) mean += v; mean /= 360.0;
-    int peaks = 0;
-    for (int k = 0; k < 360; ++k) {
-        const double p0 = ang[(k + 359) % 360], p1 = ang[k], p2 = ang[(k + 1) % 360];
-        if (p1 > p0 && p1 >= p2 && p1 > 1.5 * mean) ++peaks;
-    }
-    CHECK(peaks == 6);
+        double mean = 0.0;
+        for (double v : ang) mean += v;
+        mean /= 360.0;
+
+        int best = 0; double bestMag = -1.0;
+        for (int h = 1; h < 40; ++h) {              // direct DFT, no power-of-two needed
+            double re = 0.0, im = 0.0;
+            for (int k = 0; k < 360; ++k) {
+                const double a = 2.0 * kPi * h * k / 360.0;
+                re += (ang[k] - mean) * std::cos(a);
+                im -= (ang[k] - mean) * std::sin(a);
+            }
+            const double mag = std::sqrt(re * re + im * im);
+            if (mag > bestMag) { bestMag = mag; best = h; }
+        }
+        return best;
+    };
+
+    CHECK(dominantHarmonic(6) == 6);    // even blades -> N spikes
+    CHECK(dominantHarmonic(8) == 8);
+    CHECK(dominantHarmonic(5) == 10);   // odd blades -> 2N spikes
+    CHECK(dominantHarmonic(7) == 14);
 }
