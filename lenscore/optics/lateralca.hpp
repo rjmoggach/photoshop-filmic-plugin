@@ -22,7 +22,6 @@ inline float lateralMagnification(float k_l, float lambda_nm, float lambda_hat_n
 // The computation runs in double so the near-cancellation inside the root
 // itself keeps enough precision before the final cast back to float.
 inline float inverseLateralRadius(float K, float tOut) {
-    if (std::abs(K) < 1e-12f) return tOut;
     const double Kd = double(K), tOutd = double(tOut);
     const double disc = 1.0 + 4.0 * Kd * tOutd;
     if (disc <= 0.0) return tOut;                      // outside the invertible range
