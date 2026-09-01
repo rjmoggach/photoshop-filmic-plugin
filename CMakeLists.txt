@@ -14,6 +14,8 @@ option(LENS_BUILD_TESTS "Build the test suite" ON)
 
 add_subdirectory(lenscore)
 add_subdirectory(rgb2spec)
+add_subdirectory(lensdata)
+add_subdirectory(lenscli)
 
 if(LENS_BUILD_TESTS)
   include(FetchContent)
