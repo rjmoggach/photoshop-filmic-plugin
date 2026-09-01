@@ -21,14 +21,29 @@ inline float evalSpectrum(const Coeffs& c, float lambda_nm) {
     return sigmoid(std::fma(std::fma(c.c0, n, c.c1), n, c.c2));
 }
 
-namespace detail {
-
-// A flat (all-ones) reflectance spectrum integrated under illuminant E lands at a
-// chromaticity near (1/3, 1/3) -- not the D65 white the Rec2020 matrices assume -- so
-// its raw XYZ needs a diagonal (von-Kries style) adaptation onto the matrices' own
-// reference white before conversion, or a perfectly white spectrum converts to visibly
-// tinted RGB. Scale computed once, lazily, from cie.hpp's own cmf() and rec2020ToXyz().
-inline std::array<float, 2> whiteBalanceScale() {
+// Diagonal XYZ white-point scale that reconciles this file's equal-energy (illuminant
+// E) spectral integration with the D65-referenced Rec.2020 matrices in cie.hpp. A flat
+// (all-ones) reflectance spectrum integrated under illuminant E lands at a chromaticity
+// near (1/3, 1/3); the Rec.2020 matrices assume a D65 white. Left uncorrected, a
+// perfectly white spectrum converts to visibly tinted RGB -- and because evalSpectrum's
+// sigmoid saturates at 1.0, no choice of Coeffs can compensate a red channel biased by
+// more than 10%, so RGB{1,1,1} is not merely tinted, it becomes unreachable by
+// fitCoeffs.
+//
+// This is NOT a von Kries transform: true von Kries adapts in cone-response (LMS)
+// space. This is a plain diagonal scale applied directly in XYZ -- exact at the white
+// point by construction, and only a linear extrapolation (not a physically modelled
+// chromatic adaptation) away from it, so it is approximate for saturated colours. A
+// physically stricter treatment would integrate the model spectrum against a real D65
+// spectral power distribution instead of a flat illuminant E. That was a deliberate
+// trade for this task, not an oversight, and is recorded here as a known limitation.
+//
+// Exported (not file-local) because any code that accumulates XYZ from cmf() and
+// converts through xyzToRec2020 directly -- bypassing spectrumToRec2020 -- needs this
+// same correction, or it will reproduce the same white-point bias. Computed once,
+// lazily, from cie.hpp's own cmf() and rec2020ToXyz(); returns {scaleX, scaleZ} (Y
+// needs no correction: both integrations already normalise it to 1).
+inline std::array<float, 2> equalEnergyWhitePointScale() {
     static const std::array<float, 2> k = [] {
         XYZ acc{0, 0, 0};
         float norm = 0.0f;
@@ -44,10 +59,8 @@ inline std::array<float, 2> whiteBalanceScale() {
     return k;
 }
 
-}  // namespace detail
-
 // Integrates the spectrum against the CMFs under illuminant E, at 5nm, then adapts the
-// result onto the Rec2020 matrices' reference white (see detail::whiteBalanceScale).
+// result onto the Rec2020 matrices' reference white (see equalEnergyWhitePointScale).
 inline RGB spectrumToRec2020(const Coeffs& c) {
     XYZ acc{0, 0, 0};
     float norm = 0.0f;
@@ -58,19 +71,32 @@ inline RGB spectrumToRec2020(const Coeffs& c) {
         norm  += m.y;
     }
     acc.x /= norm; acc.y /= norm; acc.z /= norm;
-    const auto wb = detail::whiteBalanceScale();
+    const auto wb = equalEnergyWhitePointScale();
     acc.x *= wb[0]; acc.z *= wb[1];
     return xyzToRec2020(acc);
 }
 
 // Levenberg-Marquardt on three parameters against three residuals.
+//
+// fitCoeffs expects a normalised target (max component <= 1); the caller carries any
+// overall radiance scale (e.g. max(r,g,b) of the original pixel) separately, outside
+// the model -- see the file-level note above. In debug builds that contract is
+// checked by assert. An assert alone is not a contract: under NDEBUG it compiles away
+// and a release build would silently fit an out-of-range target and hand back a poor,
+// unsignalled fit. So the contract is also enforced on the release path: when the
+// target's max component exceeds 1, it is normalised internally before fitting, and
+// the coefficients for that normalised colour are returned -- the same semantics an
+// in-range caller already gets, just recovered here rather than corrupted.
 inline Coeffs fitCoeffs(const RGB& target, Coeffs guess = {}) {
     assert(std::max({target.r, target.g, target.b}) <= 1.0001f &&
            "fitCoeffs expects a normalised colour; carry the scale separately");
 
+    const float m = std::max({target.r, target.g, target.b, 1.0f});
+    const RGB normalised = (m > 1.0f) ? RGB{target.r / m, target.g / m, target.b / m} : target;
+
     auto residual = [&](const Coeffs& c) {
         const RGB got = spectrumToRec2020(c);
-        return std::array<float, 3>{got.r - target.r, got.g - target.g, got.b - target.b};
+        return std::array<float, 3>{got.r - normalised.r, got.g - normalised.g, got.b - normalised.b};
     };
 
     Coeffs c = guess;
