@@ -828,9 +828,15 @@ TEST_CASE("lookup round trips grey at several brightnesses") {
     }
 }
 
-TEST_CASE("lookup is scale equivariant, so HDR values pass through") {
-    const Coeffs a = lookup(smallTable(), RGB{0.4f, 0.2f, 0.1f});
-    const Coeffs b = lookup(smallTable(), RGB{4.0f, 2.0f, 1.0f});
+TEST_CASE("lookup is scale equivariant at and beyond the gamut boundary") {
+    // The table spans [0,1]^3 only, so everything at or past the boundary along a ray
+    // clamps to the same cell and must agree exactly. Below the boundary the model is
+    // deliberately NOT scale-invariant: that is the entire reason the table has a third,
+    // brightness axis. A muted colour legitimately needs a different spectral shape than
+    // the same hue at full brightness. Comparing an in-gamut point against an out-of-gamut
+    // one would assert a property this design does not have.
+    const Coeffs a = lookup(smallTable(), RGB{1.0f, 0.5f, 0.25f});
+    const Coeffs b = lookup(smallTable(), RGB{10.0f, 5.0f, 2.5f});
     CHECK(a.c0 == doctest::Approx(b.c0).epsilon(1e-4));
     CHECK(a.c1 == doctest::Approx(b.c1).epsilon(1e-4));
     CHECK(a.c2 == doctest::Approx(b.c2).epsilon(1e-4));
@@ -905,8 +911,12 @@ inline SpecTable buildTable(int res) {
                     rgb[i]           = scale;
                     rgb[(i + 1) % 3] = a * scale;
                     rgb[(i + 2) % 3] = b * scale;
-                    // Fit the normalised colour; the scale rides outside the model.
-                    const Coeffs c = fitCoeffs(RGB{rgb[0] / scale, rgb[1] / scale, rgb[2] / scale}, warm);
+                    // Fit the target AS IS. Its max component is already `scale` <= 1, which
+                    // satisfies fitCoeffs's normalised-input contract. Do NOT divide by
+                    // `scale`: that collapses every z-slice onto the same amplitude-1 target,
+                    // so all slices fit identically and the brightness axis stops encoding
+                    // brightness -- defeating the point of a 3D table.
+                    const Coeffs c = fitCoeffs(RGB{rgb[0], rgb[1], rgb[2]}, warm);
                     warm = c;
                     const size_t o = tableIndex(res, i, z, y, x);
                     t.data[o + 0] = c.c0; t.data[o + 1] = c.c1; t.data[o + 2] = c.c2;
@@ -3703,7 +3713,10 @@ inline Image render(const Image& src, const Params& p, const color::SpecTable& t
                 c.b = color::expandHighlights(c.b, p.knee);
             }
             const size_t i = size_t(y) * w + x;
-            scale[i] = std::max({c.r, c.g, c.b, 0.0f});
+            // The table reproduces the colour directly for in-gamut inputs, so only the
+            // EXCESS above the gamut boundary rides outside the model. Scaling by the raw
+            // maximum here would square the brightness of every in-gamut pixel.
+            scale[i] = std::max(1.0f, std::max({c.r, c.g, c.b, 0.0f}));
             coeff[i] = color::lookup(tbl, c);
         }
 

@@ -165,10 +165,28 @@ Gauss-Newton fit per grid cell against the CIE objective, ~10-60s per colour
 space, and the result is committed as a binary asset. We ship tables for
 sRGB/Rec.709 and Rec.2020 linear.
 
-**Caveat to record.** The model minimises error projected onto the CIE colour
-matching functions. It is valid because we integrate back through those same
-CMFs. Retargeting to a camera's response curves would require refitting, not
-merely a different `3x3` matrix.
+**Two caveats to record.** The model minimises error projected onto the CIE
+colour matching functions. It is valid because we integrate back through those
+same CMFs. Retargeting to a camera's response curves would require refitting,
+not merely a different `3x3` matrix.
+
+Second, the reconstruction treats the spectrum as a reflectance under an
+**equal-energy illuminant**, while the Rec.2020 matrices are referenced to
+**D65**. We reconcile the two with a diagonal white-point scale in XYZ, applied
+once inside `spectrumToRec2020`. It is exact at the white point and an
+approximation elsewhere — a true chromatic adaptation would work in
+cone-response space, and a more physical treatment would integrate against a
+real D65 spectral power distribution so that reflectance times illuminant is
+radiance.
+
+This cannot disturb round-trip identity, because the fit optimises against the
+same function that applies the scale. What it does change is *which metamer* we
+reconstruct for a given RGB — and since different metamers disperse
+differently, it is a second-order limitation on fringe colour for saturated
+subjects. Accepted deliberately: a D65 table costs roughly eighty more
+constants, and no test or downstream consumer currently distinguishes the two.
+Revisit if a later stage needs physically accurate spectral radiance rather
+than round-trip fidelity.
 
 Two quality tiers:
 
