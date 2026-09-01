@@ -1,0 +1,5 @@
+ref/*.pdf
+ref/*.zip
+ref/**/__MACOSX/
+build/
+.DS_Store
