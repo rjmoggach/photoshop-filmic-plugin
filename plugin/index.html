@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <link rel="stylesheet" href="style.css">
+  <script src="main.js"></script>
+</head>
+<body>
+  <sp-heading size="S">Filmic Lens</sp-heading>
+
+  <div class="group">
+    <sp-detail>Chromatic aberration</sp-detail>
+    <input type="range" id="chromaticAberration" min="0" max="200" value="0" step="1">
+    <sp-detail class="val" id="chromaticAberration-val">0%</sp-detail>
+  </div>
+
+  <div class="group">
+    <sp-detail>Vignette</sp-detail>
+    <input type="range" id="vignette" min="0" max="200" value="0" step="1">
+    <sp-detail class="val" id="vignette-val">0%</sp-detail>
+  </div>
+
+  <div class="group">
+    <sp-detail>Edge blur — field curvature</sp-detail>
+    <input type="range" id="edgeBlur" min="0" max="200" value="0" step="1">
+    <sp-detail class="val" id="edgeBlur-val">0%</sp-detail>
+  </div>
+
+  <div class="group">
+    <sp-detail>Astigmatism</sp-detail>
+    <input type="range" id="astigmatism" min="0" max="200" value="0" step="1">
+    <sp-detail class="val" id="astigmatism-val">0%</sp-detail>
+  </div>
+
+  <div class="group">
+    <sp-detail>Coma</sp-detail>
+    <input type="range" id="coma" min="0" max="200" value="0" step="1">
+    <sp-detail class="val" id="coma-val">0%</sp-detail>
+  </div>
+
+  <div class="group">
+    <sp-detail>Aperture — T-stop</sp-detail>
+    <input type="range" id="tStop" min="14" max="160" value="20" step="1">
+    <sp-detail class="val" id="tStop-val">T/2.0</sp-detail>
+  </div>
+
+  <div class="group">
+    <sp-detail>Spectral bands — higher is slower, smoother fringes</sp-detail>
+    <input type="range" id="bands" min="3" max="11" value="3" step="2">
+    <sp-detail class="val" id="bands-val">3</sp-detail>
+  </div>
+
+  <footer>
+    <sp-button id="apply" variant="cta">Apply to layer</sp-button>
+    <sp-body size="XS" id="status">Ready.</sp-body>
+  </footer>
+</body>
+</html>

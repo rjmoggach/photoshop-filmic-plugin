@@ -1,0 +1,40 @@
+{
+  "id": "tv.dashing.filmiclens",
+  "name": "Filmic Lens",
+  "manifestVersion": 6,
+  "version": "0.2.0",
+  "main": "index.html",
+  "host": {
+    "app": "PS",
+    "minVersion": "24.2.0",
+    "data": { "apiVersion": 2 }
+  },
+  "entrypoints": [
+    {
+      "type": "panel",
+      "id": "filmicLensPanel",
+      "label": { "default": "Filmic Lens" },
+      "minimumSize": { "width": 260, "height": 380 },
+      "maximumSize": { "width": 2000, "height": 2000 },
+      "preferredDockedSize": { "width": 300, "height": 560 },
+      "preferredFloatingSize": { "width": 320, "height": 600 },
+      "icons": [
+        { "path": "icons/plugin@1x.png", "width": 24, "height": 24,
+          "scale": [1], "theme": ["darkest","dark","medium","lightest","light"], "species": ["generic"] },
+        { "path": "icons/plugin@2x.png", "width": 48, "height": 48,
+          "scale": [2], "theme": ["darkest","dark","medium","lightest","light"], "species": ["generic"] }
+      ]
+    }
+  ],
+  "addon": { "name": "lens.uxpaddon" },
+  "requiredPermissions": {
+    "enableAddon": true,
+    "localFileSystem": "plugin"
+  },
+  "icons": [
+    { "path": "icons/plugin@1x.png", "width": 24, "height": 24, "scale": [1],
+      "theme": ["darkest","dark","medium","lightest","light"] },
+    { "path": "icons/plugin@2x.png", "width": 48, "height": 48, "scale": [2],
+      "theme": ["darkest","dark","medium","lightest","light"] }
+  ]
+}

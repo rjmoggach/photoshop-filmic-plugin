@@ -4,17 +4,19 @@ Physically accurate lens optics for Photoshop: chromatic aberration, vignetting,
 field curvature and edge blur, computed from optical models whose parameters can
 be measured from real glass.
 
-**Status: the optics core is complete and tested. There is no Photoshop plugin
-yet.** This release is a host-free C++20 library and a terminal harness. See
-[What you can do with this today](#what-you-can-do-with-this-today) before you
-plan around it.
+**Status: loadable Photoshop plugin, plus the optics core it runs on.** The
+panel gives you sliders for chromatic aberration, vignetting, edge blur,
+astigmatism, coma and aperture, and applies them to the active layer. The
+physics runs natively — the panel is UI only.
 
 ## What's here
 
 | Component | What it is |
 |---|---|
 | `lenscore/` | Header-only C++20 optics library. Links nothing, includes only the standard library. |
-| `lenscli/` | Terminal renderer. |
+| `plugin/` | The UXP panel: manifest, UI, and the JavaScript that moves pixels. |
+| `lensaddon/` | The native `.uxpaddon` — a shared library that hands pixels to `lenscore`. |
+| `lenscli/` | Terminal renderer, for measurement rather than viewing. |
 | `lensdata/` | `.lens` parameter files and the 64³ spectral upsampling table. |
 | `tests/` | 166 cases, 29,467 assertions. |
 | `docs/superpowers/specs/` | The design spec, including every accepted limitation with its measurements. |
@@ -37,6 +39,31 @@ ctest --test-dir build --output-on-failure
 
 Expect 166 cases and 29,467 assertions, all passing, in about 20 seconds.
 
+## Install the plugin
+
+Requires Photoshop 24.2 or newer (you are on 2026) and Adobe's UXP Developer
+Tools.
+
+```
+# 1. Build the native addon. Point at your unpacked UXP Hybrid SDK.
+cmake -B build -S . -DUXP_ADDON_SDK_ROOT=/path/to/uxp-hybrid-plugin-sdk-main
+cmake --build build --target lensaddon
+```
+
+That stages `lens.uxpaddon` and the spectral table into `plugin/`.
+
+```
+# 2. In UXP Developer Tools: Add Plugin -> select plugin/manifest.json
+# 3. Click ... next to the entry -> Load
+# 4. In Photoshop: Plugins -> Filmic Lens
+```
+
+Open an image, select a layer, move the sliders, click **Apply to layer**. The
+panel reports the render time; the result is a single undoable history step.
+
+If the panel says the native addon failed to load, the addon was not built or
+not staged — re-run step 1 and reload in UDT.
+
 ## What you can do with this today
 
 **Run the test suite.** This is the meaningful thing to do right now, and it is
@@ -50,11 +77,11 @@ measure physical predictions rather than merely executing:
   fringes green and magenta rather than red and blue
 - stopping down removes mechanical vignetting, leaving the natural falloff
 
-**What you cannot do yet:** point this at a photograph. `lenscli render` reads and
-writes PFM, and nothing in the repo generates a PFM to feed it or converts one to
-something you can look at. A synthetic-target generator and a viewable output
-format are the obvious next step and are small; they are simply not in this
-release.
+**Known rough edges.** Renders are synchronous, so a large layer will hold the
+UI while it works — the panel reports elapsed time when it finishes. Start with
+a modest layer, and with **Spectral bands** at 3; raise it to 7 or 11 for
+smoother fringes once you have a look you like. `lenscli` still reads and writes
+PFM only, which is useful for measurement, not for viewing.
 
 ## Accuracy, and its limits
 

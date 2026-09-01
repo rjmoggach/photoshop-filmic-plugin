@@ -4,3 +4,8 @@ ref/
 
 build/
 .DS_Store
+
+# Build products staged into the plugin folder by lensaddon's POST_BUILD step.
+plugin/mac/
+plugin/win/
+plugin/data/

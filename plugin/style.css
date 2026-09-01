@@ -1,0 +1,7 @@
+body { padding: 12px; font-size: 12px; }
+.group { margin-bottom: 14px; }
+.group input[type=range] { width: 100%; }
+.val { opacity: 0.7; }
+footer { margin-top: 18px; display: flex; flex-direction: column; gap: 8px; }
+#status { opacity: 0.75; min-height: 2.4em; }
+#status.err { color: #ff6b6b; }
