@@ -25,7 +25,10 @@
 - **Never use `M_PI`.** It is a POSIX extension, not standard C++, and MSVC omits it
   unless `_USE_MATH_DEFINES` is set — while this project builds with `CXX_EXTENSIONS OFF`
   and targets Windows as well as macOS. Any test needing pi declares it locally:
-  `static constexpr double kPi = 3.14159265358979323846;`
+  `static constexpr double kPi = 3.14159265358979323846;` in tests, and in library code
+  include `lenscore/constants.hpp`, which defines `kPi` and `kTwoPi` ONCE in
+  `lens::` — never redefine either in a header, or two headers in the same namespace
+  collide at the point some third file includes both.
 
 ## File Structure
 
@@ -33,6 +36,7 @@
 |---|---|
 | `CMakeLists.txt` | Top-level build, options, FetchContent for doctest |
 | `lenscore/image.hpp` | `Image` value type: interleaved float RGB, width, height |
+| `lenscore/constants.hpp` | `kPi`, `kTwoPi`. ONE definition, shared. Six local copies caused an ODR collision. |
 | `lenscore/pfm.hpp` | PFM read and write. Test-harness I/O, header-only |
 | `lenscore/color/transfer.hpp` | sRGB EOTF, inverse EOTF, highlight-recovery knee |
 | `lenscore/color/cie.hpp` | CIE 1931 CMF table, spectrum to XYZ, XYZ to Rec.2020 linear |
@@ -1560,7 +1564,6 @@ static VignetteParams defaults() {
 }
 
 TEST_CASE("overlap area handles containment and disjointness") {
-    const float pi = 3.14159265f;
     CHECK(circleOverlapArea(5.0f, 1.0f, 1.0f) == doctest::Approx(0.0f));            // disjoint
     CHECK(circleOverlapArea(0.0f, 1.0f, 2.0f) == doctest::Approx(pi));              // contained
     CHECK(circleOverlapArea(0.0f, 1.0f, 1.0f) == doctest::Approx(pi));              // coincident
@@ -1641,8 +1644,6 @@ Expected: compile error, `lenscore/optics/vignette.hpp` not found.
 #include <cmath>
 
 namespace lens::optics {
-
-inline constexpr float kPi = 3.14159265358979323846f;
 
 // Area of the lens-shaped intersection of two circles, centres d apart.
 inline float circleOverlapArea(float d, float r1, float r2) {
@@ -2027,11 +2028,10 @@ namespace lens::optics {
 // radius. curvature 1 gives a circle, 0 a straight-sided polygon.
 inline float apertureEdgeRadius(int blades, float curvature, float rotationRad, float theta) {
     if (blades < 3) return 1.0f;
-    const float pi = 3.14159265358979323846f;
-    const float seg = 2.0f * pi / float(blades);
+    const float seg = 2.0f * kPi / float(blades);
     float a = std::fmod(theta + rotationRad, seg);
     if (a < 0.0f) a += seg;
-    const float poly = std::cos(pi / float(blades)) / std::cos(a - pi / float(blades));
+    const float poly = std::cos(kPi / float(blades)) / std::cos(a - kPi / float(blades));
     return std::clamp(curvature, 0.0f, 1.0f) * 1.0f + (1.0f - std::clamp(curvature, 0.0f, 1.0f)) * poly;
 }
 
@@ -2227,9 +2227,8 @@ inline void fft1d(std::vector<Cplx>& a, bool inverse) {
         if (i < j) std::swap(a[i], a[j]);
     }
 
-    const double pi = 3.14159265358979323846;
     for (int len = 2; len <= n; len <<= 1) {
-        const double ang = 2.0 * pi / len * (inverse ? 1.0 : -1.0);
+        const double ang = 2.0 * double(kPi) / len * (inverse ? 1.0 : -1.0);
         const Cplx wl(float(std::cos(ang)), float(std::sin(ang)));
         for (int i = 0; i < n; i += len) {
             Cplx w(1.0f, 0.0f);
@@ -2514,7 +2513,6 @@ inline Plane psfFromPupil(const PupilParams& pp, const Wavefront& wf,
                           float lambdaNm, float lambdaRefNm, float t, int N) {
     const Plane amp = rasterPupil(pp, t, N);
     const float chroma = lambdaRefNm / lambdaNm;
-    const float twoPi = 6.28318530717958647692f;
 
     std::vector<conv::Cplx> field(size_t(N) * N, conv::Cplx(0.0f, 0.0f));
     for (int j = 0; j < N; ++j) {
@@ -2525,7 +2523,7 @@ inline Plane psfFromPupil(const PupilParams& pp, const Wavefront& wf,
             const float u = 2.0f * float(i) / float(N - 1) - 1.0f;
             const float rho = std::sqrt(u * u + v * v) / pp.apertureRadius;
             const float th  = std::atan2(v, u);
-            const float phase = twoPi * wavefrontError(wf, rho, th) * chroma;
+            const float phase = kTwoPi * wavefrontError(wf, rho, th) * chroma;
             field[size_t(j) * N + i] = conv::Cplx(a * std::cos(phase), a * std::sin(phase));
         }
     }
@@ -2683,8 +2681,7 @@ namespace lens::conv {
 // Periodic Hann: at 50% overlap the shifted copies sum to exactly 1.
 inline std::vector<float> hannWindow(int n) {
     std::vector<float> w(n);
-    const float pi = 3.14159265358979323846f;
-    for (int i = 0; i < n; ++i) w[i] = 0.5f * (1.0f - std::cos(2.0f * pi * float(i) / float(n)));
+    for (int i = 0; i < n; ++i) w[i] = 0.5f * (1.0f - std::cos(2.0f * kPi * float(i) / float(n)));
     return w;
 }
 
