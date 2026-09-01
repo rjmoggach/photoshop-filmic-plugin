@@ -14,8 +14,11 @@
 #include "lenscore/params.hpp"
 #include "lenscore/plane.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -74,6 +77,31 @@ inline optics::Wavefront wavefrontAt(const Params& p, float t, float lambdaNm) {
     return w;
 }
 
+// color::equalEnergyWhitePointScale() computes its correction from a DENSE 5nm
+// integral, but render() integrates over only a handful of importance-sampled
+// bands. Applying the dense-integral correction to a coarse-quadrature error is
+// two different quadratures fighting each other -- that mismatch is exactly why
+// a flat spectrum tinted at low band counts. This mirrors that function's own
+// logic but replaces the dense loop with THIS render call's own band list, so
+// the correction and the error it is correcting are computed the same way. A
+// flat spectrum then maps to white exactly, at any band count, by construction
+// (the numerator and denominator are the same finite sum).
+inline std::array<float, 2> bandWhitePointScale(const float* lambdas, const float* weights, int n) {
+    color::XYZ acc{0.0f, 0.0f, 0.0f};
+    for (int i = 0; i < n; ++i) {
+        const color::XYZ m = color::cmf(lambdas[i]);
+        acc.x += weights[i] * m.x;
+        acc.y += weights[i] * m.y;
+        acc.z += weights[i] * m.z;
+    }
+    const float norm = color::cieYNormalisation(lambdas, weights, n);
+    if (norm <= 0.0f || acc.x <= 0.0f || acc.z <= 0.0f) return {1.0f, 1.0f};
+    acc.x /= norm;
+    acc.z /= norm;
+    const color::XYZ ref = color::rec2020ToXyz(color::RGB{1.0f, 1.0f, 1.0f});
+    return {ref.x / acc.x, ref.z / acc.z};
+}
+
 inline Image render(const Image& src, const Params& p, const color::SpecTable& tbl) {
     const int w = src.w, h = src.h;
     const Frame frame = frameOf(w, h);
@@ -113,22 +141,6 @@ inline Image render(const Image& src, const Params& p, const color::SpecTable& t
     for (size_t k = 0; k < bands.size(); ++k) { lambdas[k] = bands[k].first; weights[k] = bands[k].second; }
     const float normY = color::cieYNormalisation(lambdas.data(), weights.data(), int(bands.size()));
 
-    // X and Z have no equivalent named authority (only Y's is exported, because
-    // Y's is the one other files need -- see cie.hpp), so their normalisers are
-    // computed here the same way: the weighted CMF sum over this render's own
-    // band set. Dividing each channel by ITS OWN quadrature of the CMF -- rather
-    // than all three by the Y quadrature alone -- makes a flat (grey) input's
-    // reconstruction exactly self-cancelling at any band count: numerator and
-    // denominator are the same finite sum over the same bands, so the residual
-    // is only evalSpectrum's own (tiny) deviation from flat, not the mismatch
-    // between the CMF's shape and a coarse preview-tier quadrature.
-    float normX = 0.0f, normZ = 0.0f;
-    for (const auto& [lambda, weight] : bands) {
-        const color::XYZ m = color::cmf(lambda);
-        normX += weight * m.x;
-        normZ += weight * m.z;
-    }
-
     for (const auto& [lambda, weight] : bands) {
         Plane band(w, h);
         for (size_t i = 0; i < band.v.size(); ++i)
@@ -138,33 +150,53 @@ inline Image render(const Image& src, const Params& p, const color::SpecTable& t
             band = optics::warpPlane(band, lp.distortion, lp.lateralK * (lp.lambdaHat - lambda));
 
         if (lp.doPsf) {
+            // psfAtField's samplesPerPixel means "grid samples spanned by one output
+            // pixel" (psfrings.hpp: dx = (x - c) * samplesPerPixel indexes INTO the
+            // ring grid as x steps by one output pixel) -- i.e. pixel size divided by
+            // grid-sample size (verified against test_psfrings.cpp's "resampling to
+            // coarser pixels keeps the energy": a LARGER samplesPerPixel is explicitly
+            // the coarser-pixel case).
+            //
+            // The grid-sample size is psfSampleSpacingUm(lambda, fNumberWide) DIVIDED
+            // by pupilFill, not multiplied: psfSampleSpacingUm is calibrated for a
+            // pupil that fills the whole psfGrid FFT (apertureRadius == 1). Shrinking
+            // the pupil to pupilFill of the grid (see the apertureRadius line above)
+            // packs the SAME physical aperture into a smaller fraction of the same
+            // N-sample grid, i.e. represents it at higher sample density -- one grid
+            // sample now covers LESS physical distance, not more. Verified two ways:
+            // multiplying (matching an apertureRadius==1 reference literally) pushes
+            // samplesPerPixel past 14 at these parameters and every kernel from 5 to
+            // grid-filling overshoots total energy by 1-2 orders of magnitude,
+            // independent of psfGrid -- i.e. it is not a grid-too-small/clamping
+            // artifact, the ratio itself is wrong. Dividing lands samplesPerPixel
+            // near 1-2 (the diffraction pattern really does span a few output pixels
+            // at these test parameters) and, with a kernel sized generously enough
+            // to cover it (see maxKernel below), reproduces energy conservation to
+            // within a fraction of a percent, independent of psfGrid.
+            const float gridSampleUm = optics::psfSampleSpacingUm(lambda, lp.fNumberWide) / lp.pupilFill;
+            const float spp = lp.pixelPitchUm / gridSampleUm;
+
+            // The kernel's physical footprint (psfKernel pixels) cannot exceed the
+            // ring's own grid footprint (psfGrid samples), or psfAtField reads
+            // clamped edge samples for its outer pixels and energy conservation
+            // breaks silently. Fail loudly instead -- same policy as psfrings.hpp's
+            // "rings must be >= 2" check -- rather than quietly truncating a
+            // request the caller's own parameters cannot support.
+            int maxKernel = int(std::floor(lp.psfGrid * gridSampleUm / lp.pixelPitchUm));
+            if (maxKernel % 2 == 0) --maxKernel;
+            if (lp.psfKernel > maxKernel) {
+                throw std::invalid_argument(
+                    "render: psfKernel (" + std::to_string(lp.psfKernel) +
+                    ") exceeds what psfGrid=" + std::to_string(lp.psfGrid) +
+                    " covers at " + std::to_string(lambda) + "nm (max " +
+                    std::to_string(maxKernel) + "); shrink psfKernel or grow psfGrid/pupilFill");
+            }
+
             // Build the PSF rings ONCE per band, outside the convolution: the
             // effConvolve callback below only interpolates and rotates.
             const optics::PsfRings rings = optics::buildPsfRings(
                 lp.pupil, [&](float t) { return wavefrontAt(lp, t, lambda); },
                 lambda, lp.lambdaHat, lp.psfRings, lp.psfGrid);
-            // psfAtField's samplesPerPixel means "grid samples spanned by one output
-            // pixel" (see psfrings.hpp: dx = (x - c) * samplesPerPixel indexes INTO
-            // the grid as x steps by one output pixel) -- i.e. pixel size divided by
-            // grid-sample size, not the other way around (verified against
-            // test_psfrings.cpp's "resampling to coarser pixels keeps the energy",
-            // where a LARGER samplesPerPixel is explicitly the coarser-pixel case).
-            //
-            // psfSampleSpacingUm's own calibration (apertureRadius == 1 <-> fNumberWide,
-            // fixed since Task 13, independent of pupilFill) would suggest scaling the
-            // grid-sample size by the full apertureRadius (pupilFill here, at the wide
-            // -open stop) to get the physical size one grid sample represents. Taking
-            // that literally drives samplesPerPixel past 14 at these test's psfGrid/
-            // psfKernel sizes -- the resulting kernel reaches far outside the ring's own
-            // grid and repeatedly samples clamped edge values, breaking energy
-            // conservation (verified: multiplying by pupilFill directly overshoots by
-            // 1-2 orders of magnitude here). Using sqrt(pupilFill) -- the geometric mean
-            // between "no correction" and "full pupilFill correction" -- keeps the
-            // kernel's footprint inside the ring's grid and reproduces the energy
-            // conservation this pipeline promises; verified against
-            // "energy is conserved across the spectral and convolution stages" and the
-            // rotational-symmetry test.
-            const float spp = lp.pixelPitchUm * std::sqrt(lp.pupilFill) / optics::psfSampleSpacingUm(lambda, lp.fNumberWide);
             band = conv::effConvolve(band, lp.effPatch, [&](float cx, float cy) {
                 const float dx = (cx - frame.cx) / frame.halfDiag;
                 const float dy = (cy - frame.cy) / frame.halfDiag;
@@ -182,16 +214,20 @@ inline Image render(const Image& src, const Params& p, const color::SpecTable& t
     }
 
     // Diagonal white-point scale that reconciles the equal-energy spectral
-    // integration above with the D65-referenced Rec.2020 matrices. Without
-    // this, a flat spectrum comes out tinted instead of white.
-    const auto wb = color::equalEnergyWhitePointScale();
+    // integration above with the D65-referenced Rec.2020 matrices. Computed
+    // from THIS render's own band set (see bandWhitePointScale above), not
+    // the dense continuous integral color::equalEnergyWhitePointScale() uses
+    // for spectrumToRec2020 -- the correction must be integrated the same way
+    // as the error it corrects, or a flat spectrum comes out tinted instead
+    // of white at low band counts.
+    const auto wb = bandWhitePointScale(lambdas.data(), weights.data(), int(bands.size()));
 
     Image out(w, h);
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x) {
             const size_t i = size_t(y) * w + x;
             color::RGB c = color::xyzToRec2020(color::XYZ{
-                X[i] / normX * wb[0], Y[i] / normY, Z[i] / normZ * wb[1]});
+                X[i] / normY * wb[0], Y[i] / normY, Z[i] / normY * wb[1]});
 
             if (lp.doVignette) {
                 const float dx = (float(x) - frame.cx) / frame.halfDiag;

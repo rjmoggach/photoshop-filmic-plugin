@@ -3,6 +3,7 @@
 #include "metrics.hpp"
 #include "targets.hpp"
 #include <cmath>
+#include <stdexcept>
 
 using namespace lens;
 using namespace lens::metrics;
@@ -90,7 +91,7 @@ TEST_CASE("a rotationally symmetric input stays symmetric through the whole pipe
     p.highlightRecovery = false;
     p.doLateralCa = true; p.doPsf = true; p.doVignette = true;
     p.lateralK = 2e-5f; p.petzval = 0.8f; p.spherical = 0.3f;
-    p.psfGrid = 64; p.psfRings = 6; p.psfKernel = 17; p.effPatch = 32;
+    p.psfGrid = 128; p.psfRings = 6; p.psfKernel = 65; p.effPatch = 128;
 
     Plane sym(65, 65);
     const Frame f = frameOf(65, 65);
@@ -110,11 +111,56 @@ TEST_CASE("energy is conserved across the spectral and convolution stages") {
     p.petzval = 0.0f; p.astig = 0.0f; p.coma = 0.0f; p.spherical = 0.0f;
     p.dispersion.residual = 0.0f;
     p.pupil.rEntrance = 1e6f; p.pupil.rExit = 1e6f; p.pupil.sepNorm = 0.0f;
-    p.psfGrid = 64; p.psfRings = 4; p.psfKernel = 17; p.effPatch = 32;
+    p.psfGrid = 128; p.psfRings = 4; p.psfKernel = 65; p.effPatch = 128;
 
     Plane blob(64, 64);
     for (int y = 20; y < 44; ++y) for (int x = 20; x < 44; ++x) blob.at(x, y) = 1.0f;
     const Image src = toImage(blob);
     const Image out = render(src, p, table());
     CHECK(totalEnergy(out) / totalEnergy(src) == doctest::Approx(1.0).epsilon(0.02));
+}
+
+// The self-normalisation bug this pipeline once had (each of X, Y, Z divided by its
+// OWN weighted-CMF sum) forced a flat spectrum to reconstruct exactly, at the cost of
+// applying three different quadrature corrections to a coloured spectrum -- a
+// distortion no test caught, because every other case here is achromatic. This checks
+// a clearly non-grey colour through the FULL pipeline (spectral round trip only; PSF,
+// lateral CA and vignette are orthogonal to colour and are covered elsewhere) against
+// the dense-integral ground truth spectrumToRec2020(lookup(...)) computes, at both the
+// preview tier and the default band count. 3 bands is a genuinely coarse quadrature of
+// a bimodal CMF -- some error there is real and expected, not a bug -- so its tolerance
+// is deliberately looser than 11's; both must still land in the right neighbourhood of
+// the true colour, not some other hue entirely.
+TEST_CASE("a coloured input keeps its hue through the spectral stage at both band counts") {
+    const color::RGB in{0.6f, 0.45f, 0.35f};
+    const color::RGB truth = color::spectrumToRec2020(color::lookup(table(), in));
+
+    Image src(8, 8);
+    for (int y = 0; y < 8; ++y)
+        for (int x = 0; x < 8; ++x) {
+            src.at(x, y, 0) = in.r; src.at(x, y, 1) = in.g; src.at(x, y, 2) = in.b;
+        }
+
+    for (int n : {3, 11}) {
+        Params p = nullParams(); p.bands = n;
+        const Image out = render(src, p, table());
+        const float eps = (n == 3) ? 0.30f : 0.08f;
+        CAPTURE(n);
+        CHECK(out.at(4, 4, 0) == doctest::Approx(truth.r).epsilon(eps).scale(0));
+        CHECK(out.at(4, 4, 1) == doctest::Approx(truth.g).epsilon(eps).scale(0));
+        CHECK(out.at(4, 4, 2) == doctest::Approx(truth.b).epsilon(eps).scale(0));
+    }
+}
+
+TEST_CASE("render rejects a psfKernel the grid cannot cover") {
+    // psfGrid=8 covers only a handful of micrometres at these defaults; psfKernel=65
+    // (the Params default) demands far more than that grid can supply at any sampled
+    // wavelength. Programmer error should fail loudly here, the same policy
+    // psfrings.hpp already applies to "rings must be >= 2", rather than silently
+    // truncating a request the caller's own parameters cannot support.
+    Params p = nullParams();
+    p.doPsf = true;
+    p.psfGrid = 8;
+    p.psfRings = 2;
+    CHECK_THROWS_AS(render(toImage(flatField(8, 8, 0.5f)), p, table()), std::invalid_argument);
 }
