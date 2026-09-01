@@ -73,8 +73,11 @@ TEST_CASE("rasterised pupil energy agrees with the independent closed form") {
         p.apertureRadius = v.tStopWide / v.tStop;
         p.rEntrance = v.rEntrance; p.rExit = 1e6f; p.sepNorm = v.sepNorm;
         CAPTURE(stop);
+        // Boundary-pixel quantisation at N=512 is on the order of 1/N (~0.2%),
+        // so 0.5% is already loose relative to rasterisation error; it is not
+        // a relaxation for either model's own imprecision.
         CHECK(pupilEnergyFraction(p, 1.0f, 512) ==
-              doctest::Approx(mechanicalFraction(v, 1.0f)).epsilon(0.02));
+              doctest::Approx(mechanicalFraction(v, 1.0f)).epsilon(0.005));
     }
 }
 
@@ -91,4 +94,22 @@ TEST_CASE("apodization shifts the pupil centroid outward without adding energy")
         }
     CHECK(sb / sa == doctest::Approx(1.0).epsilon(0.01));   // energy preserved
     CHECK(cx / sb > 0.02);                                   // centroid moved outward
+}
+
+TEST_CASE("apodization stays energy-neutral at the maximum allowed slope") {
+    // At kMaxApodizationSlope (0.9) the ramp's floor, 1 - 0.9 = 0.1, is still
+    // strictly positive at t=1, u=-1, so the clamp on out.at() never fires and
+    // the ramp's mean over the disc is still exactly 1 -- energy neutrality
+    // must hold right up to the boundary, not just at the small slope (0.31)
+    // the other apodization test uses.
+    PupilParams flat = circular();
+    PupilParams ramp = circular(); ramp.apodizationSlope = kMaxApodizationSlope;
+    const Plane a = rasterPupil(flat, 1.0f, 256);
+    const Plane b = rasterPupil(ramp, 1.0f, 256);
+    double sa = 0, sb = 0;
+    for (int y = 0; y < 256; ++y)
+        for (int x = 0; x < 256; ++x) {
+            sa += a.at(x, y); sb += b.at(x, y);
+        }
+    CHECK(sb / sa == doctest::Approx(1.0).epsilon(0.01));   // energy preserved at the boundary
 }

@@ -1,10 +1,9 @@
 #pragma once
+#include "lenscore/constants.hpp"
 #include <algorithm>
 #include <cmath>
 
 namespace lens::optics {
-
-inline constexpr float kPi = 3.14159265358979323846f;
 
 // Area of the lens-shaped intersection of two circles, centres d apart.
 inline float circleOverlapArea(float d, float r1, float r2) {
