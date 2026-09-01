@@ -1,6 +1,8 @@
 #include <doctest/doctest.h>
 #include "lenscore/optics/psfrings.hpp"
+#include <algorithm>
 #include <cmath>
+#include <stdexcept>
 
 using namespace lens;
 using namespace lens::optics;
@@ -20,14 +22,25 @@ static PupilParams vignettingDisc() {
     return p;
 }
 
-static void centroid(const Plane& p, double& cx, double& cy) {
-    double s = 0; cx = 0; cy = 0;
-    for (int y = 0; y < p.h; ++y) for (int x = 0; x < p.w; ++x) {
-        s  += p.at(x, y);
-        cx += p.at(x, y) * (x - p.w / 2.0);
-        cy += p.at(x, y) * (y - p.h / 2.0);
+// Numerically rotates `src` about its own centre by thetaRad, using EXACTLY
+// psfAtField's inverse-rotation convention (see psfrings.hpp). This is an
+// independent, test-only cross-check: it lets us ask "does psfAtField's
+// output at angle theta match what you get by rotating psfAtField's own
+// on-axis output by theta", entirely outside of production code.
+static Plane rotatePlane(const Plane& src, float thetaRad) {
+    const float ct = std::cos(thetaRad), st = std::sin(thetaRad);
+    const float c = 0.5f * float(src.w - 1);
+    Plane out(src.w, src.h);
+    for (int y = 0; y < src.h; ++y) {
+        for (int x = 0; x < src.w; ++x) {
+            const float dx = float(x) - c;
+            const float dy = float(y) - c;
+            const float ux =  ct * dx + st * dy;
+            const float uy = -st * dx + ct * dy;
+            out.at(x, y) = sampleBilinear(src, c + ux, c + uy);
+        }
     }
-    if (s > 0) { cx /= s; cy /= s; }
+    return out;
 }
 
 TEST_CASE("rings are built at the requested count") {
@@ -49,19 +62,51 @@ TEST_CASE("a rotationally symmetric aberration gives the same PSF at every angle
     }
 }
 
-TEST_CASE("coma's tail follows the radial direction round the frame") {
+// Fix round 3: a centroid is exactly the statistic truncation corrupts (a
+// window that clips coma's long tail asymmetrically rotates the MEASURED
+// centroid by the wrong amount, independent of whether the rotation code is
+// correct). This replaces both centroid-based coma tests with an image
+// comparison instead: `b` (psfAtField at theta) is compared directly against
+// `c` (psfAtField's on-axis output `a`, numerically rotated by theta). `a`
+// and `b` are both produced by the SAME 65-pixel window, so whatever that
+// window clips, it clips identically going into both -- the comparison does
+// not depend on the window containing the whole distribution the way a
+// centroid or an energy-capture guard did.
+TEST_CASE("coma's tail rotates with the field angle, direction included") {
     const PsfRings r = buildPsfRings(disc(), [](float t) {
         Wavefront w; w.coma = 1.5f * t; return w; }, 550.0f, 550.0f, 8, 256);
 
-    double cx = 0, cy = 0;
-    centroid(psfAtField(r, 1.0f, 0.0f, 1.0f, 65), cx, cy);
-    const double along = std::abs(cx);
-    CHECK(along > 0.3);
-    CHECK(std::abs(cy) < 0.25 * along);
+    // theta = 45 degrees: at 0 or 90 degrees a transposed (inverse-flipped)
+    // rotation produces the same magnitudes as the correct one, so only an
+    // off-cardinal angle actually discriminates direction.
+    const float theta = 0.78539816f;
+    const Plane a = psfAtField(r, 1.0f, 0.0f,  1.0f, 65);   // on axis
+    const Plane b = psfAtField(r, 1.0f, theta, 1.0f, 65);   // rotated by theta
+    const Plane c = rotatePlane(a, theta);                  // a, rotated the same way, numerically
 
-    centroid(psfAtField(r, 1.0f, 1.5707963f, 1.0f, 65), cx, cy);   // 90 degrees
-    CHECK(std::abs(cy) > 0.3);
-    CHECK(std::abs(cx) < 0.25 * std::abs(cy));
+    float peak = 0.0f;
+    for (float v : a.v) peak = std::max(peak, v);
+    REQUIRE(peak > 0.0f);
+
+    // Comparing over the WHOLE plane (or even down to 1% of peak) does not work here:
+    // coma's tail is wide enough that most of a 65px window is still tail, not core, and
+    // rotatePlane(a, theta) has to sample a's corners from outside a's own 65px extent --
+    // the exact same square-window truncation mismatch this test exists to avoid, just
+    // moved one step later. Restricting to pixels near a's peak (empirically, >= 70% of
+    // it) keeps the comparison inside the well-resolved core, safely away from where
+    // rotatePlane's corner sampling runs off the edge of `a`. That is a SMALL region of
+    // the window (a handful of pixels), not a small threshold value.
+    double sumSq = 0.0; int n = 0;
+    for (size_t i = 0; i < a.v.size(); ++i) {
+        if (a.v[i] > 0.7f * peak) {
+            const double d = double(b.v[i]) - double(c.v[i]);
+            sumSq += d * d;
+            ++n;
+        }
+    }
+    REQUIRE(n > 0);
+    const double rms = std::sqrt(sumSq / double(n));
+    CHECK(rms / double(peak) < 0.05);
 }
 
 TEST_CASE("sampling exactly on a ring returns that ring's energy") {
@@ -97,4 +142,82 @@ TEST_CASE("the on-axis kernel sums to 1; a vignetted off-axis kernel sums to les
     const double offAxis = energy(psfAtField(r, 1.0f, 0.0f, 1.0f, 127));
     CHECK(onAxis == doctest::Approx(1.0).epsilon(0.05));
     CHECK(offAxis < onAxis);
+}
+
+// Fix round 1, finding 1: fewer than two rings leaves psfAtField's i0/i0+1
+// pairing undefined (i0 = -1, an out-of-bounds ring[-1] read), and a negative
+// rings previously wrapped size_t(rings) into a huge reserve() before the
+// loop even ran. Both must be rejected as programmer error, not tolerated.
+TEST_CASE("buildPsfRings rejects fewer than two rings") {
+    auto flat = [](float) { return Wavefront{}; };
+    CHECK_THROWS_AS(buildPsfRings(disc(), flat, 550.0f, 550.0f, 1, 64), std::invalid_argument);
+    CHECK_THROWS_AS(buildPsfRings(disc(), flat, 550.0f, 550.0f, 0, 64), std::invalid_argument);
+    CHECK_THROWS_AS(buildPsfRings(disc(), flat, 550.0f, 550.0f, -3, 64), std::invalid_argument);
+}
+
+// psfAtField takes a PsfRings it did not necessarily build itself (nothing
+// stops a caller from constructing one by hand), so it must not assume the
+// >= 2 rings invariant holds -- it has to check, not just document.
+TEST_CASE("psfAtField rejects a PsfRings with fewer than two rings") {
+    PsfRings empty;                       // default-constructed: 0 rings
+    CHECK_THROWS_AS(psfAtField(empty, 0.0f, 0.0f, 1.0f, 17), std::invalid_argument);
+
+    PsfRings one;
+    one.gridN = 64;
+    one.ring.push_back(Plane(64, 64));    // still only 1 ring
+    CHECK_THROWS_AS(psfAtField(one, 0.0f, 0.0f, 1.0f, 17), std::invalid_argument);
+}
+
+// Fix round 1, finding 3: axisEnergyOf must floor near-zero energy (denormal
+// noise, not just an exact 0.0 sum), or dividing by it would silently blow
+// every kernel up by an arbitrary, physically meaningless factor.
+TEST_CASE("axisEnergyOf floors near-zero energy instead of dividing by it") {
+    CHECK(axisEnergyOf(Plane(4, 4)) == doctest::Approx(1.0));   // exact zero: default Plane
+
+    Plane denormal(4, 4);
+    for (float& v : denormal.v) v = 1e-20f;                     // technically > 0, still noise-scale
+    CHECK(axisEnergyOf(denormal) == doctest::Approx(1.0));
+
+    Plane real(4, 4);
+    for (float& v : real.v) v = 2.0f;                           // a real, usable energy
+    CHECK(axisEnergyOf(real) == doctest::Approx(32.0));          // 16 pixels * 2.0, well above the floor
+}
+
+// The pipeline-level companion to the above: a pupil clipped almost to
+// nothing (here, an aperture just barely wide enough to admit the handful of
+// grid pixels closest to the centre at N=128) still yields a finite, sanely
+// normalised on-axis kernel -- it neither explodes nor gets incorrectly
+// floored just because its energy is small.
+// Directly exercises the floor itself, as opposed to the small-but-legitimate
+// energy case above: an aperture with literally zero grid pixels inside it
+// gives an exactly-zero raw ring, axisEnergyOf floors that to 1.0, and
+// psfAtField's scale becomes just the area factor -- no division by anything
+// near zero ever happens, so the result is FINITE (here, trivially zero,
+// since scale * 0 = 0) rather than NaN or infinite.
+TEST_CASE("a fully occluded pupil hits the axisEnergy floor and stays finite") {
+    PupilParams p = disc();
+    p.apertureRadius = 0.001f;   // smaller than any grid pixel's distance from centre at N=64
+    const PsfRings r = buildPsfRings(p, [](float) { return Wavefront{}; },
+                                     550.0f, 550.0f, 2, 64);
+    CHECK(r.axisEnergy == doctest::Approx(1.0));   // floor engaged: raw energy was exactly 0
+
+    const Plane onAxis = psfAtField(r, 0.0f, 0.0f, 1.0f, 17);
+    for (float v : onAxis.v) {
+        CHECK(std::isfinite(v));
+        CHECK(v == doctest::Approx(0.0f));         // raw ring was all zero; scale never divided by it
+    }
+}
+
+TEST_CASE("a pupil clipped almost to nothing still normalises sanely") {
+    PupilParams p = disc();
+    p.apertureRadius = 0.012f;   // admits only the centremost few pixels at N=128
+    const PsfRings r = buildPsfRings(p, [](float) { return Wavefront{}; },
+                                     550.0f, 550.0f, 2, 128);
+    CHECK(r.axisEnergy > 0.0);
+
+    const Plane onAxis = psfAtField(r, 0.0f, 0.0f, 1.0f, 65);
+    double s = 0.0;
+    for (float v : onAxis.v) { CHECK(std::isfinite(v)); s += v; }
+    CHECK(std::isfinite(s));
+    CHECK(s == doctest::Approx(1.0).epsilon(0.2));
 }

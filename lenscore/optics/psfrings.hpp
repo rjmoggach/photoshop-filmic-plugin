@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace lens::optics {
@@ -12,6 +14,10 @@ namespace lens::optics {
 // rather than recomputing a PSF per angle. This exploits Task 10's radial
 // Zernike frame: the PSF's shape depends only on field radius, so at any
 // other angle it is the same kernel, rotated.
+//
+// ring.size() must be >= 2: psfAtField always interpolates between a pair of
+// adjacent rings (see i0/i0+1 below), so build via buildPsfRings, which
+// enforces this, rather than assembling one by hand.
 struct PsfRings {
     std::vector<Plane> ring;   // index i is field radius t = i/(rings-1)
     int gridN = 0;
@@ -23,25 +29,57 @@ struct PsfRings {
     // N^2 * sum(A^2) (Parseval). Dividing every ring by axisEnergy instead
     // makes the on-axis kernel sum to 1 and every off-axis kernel sum to the
     // vignetting fraction *relative to the axis*, which is what a spatially
-    // varying convolution actually wants.
+    // varying convolution actually wants. See axisEnergyOf for what happens
+    // when ring 0 itself carries no usable energy.
     double axisEnergy = 1.0;
 };
+
+// Below this, a ring's total energy is not a safe normalisation reference.
+// Exact zero happens for a fully occluded on-axis pupil (psfFromPupil writes
+// literal 0.0f everywhere); a value that is technically positive but many
+// orders of magnitude smaller -- denormal-range floating point noise, or a
+// pathologically near-empty aperture -- is just as dangerous, because 1/s
+// would still amplify every kernel by an arbitrary, physically meaningless
+// factor (e.g. an axisEnergy of 1e-30 silently blows every kernel up by
+// 1e30). The smallest energy a single realistically-illuminated pixel can
+// contribute under this pupil model is many orders of magnitude above this
+// floor, so it only ever fires for genuinely degenerate input.
+inline constexpr double kMinAxisEnergy = 1e-6;
+
+// Sum of a ring's raw intensity, floored against kMinAxisEnergy. Below the
+// floor, the fallback is axisEnergy = 1.0: psfAtField's scale becomes just
+// the resampling area factor, i.e. every ring keeps its raw psfFromPupil
+// magnitude, unrescaled, instead of being divided by noise. Exposed as its
+// own function (rather than inlined into buildPsfRings) so the floor is
+// unit-testable directly, without needing a pupil configuration that happens
+// to trigger it.
+inline double axisEnergyOf(const Plane& axisRing) {
+    double s = 0.0;
+    for (float v : axisRing.v) s += v;
+    return (s > kMinAxisEnergy) ? s : 1.0;
+}
 
 inline PsfRings buildPsfRings(const PupilParams& pp,
                               const std::function<Wavefront(float)>& wavefrontAtT,
                               float lambdaNm, float lambdaRefNm, int rings, int N) {
+    // psfAtField always reads ring[i0] and ring[i0+1] together, so fewer than
+    // two rings is a contract violation by the caller, not bad input data --
+    // validated before the reserve below, which would otherwise turn a
+    // negative rings into an enormous size_t and attempt a huge allocation.
+    if (rings < 2) {
+        throw std::invalid_argument(
+            "buildPsfRings: rings must be >= 2 (psfAtField interpolates "
+            "between a pair of rings); got " + std::to_string(rings));
+    }
+
     PsfRings out;
     out.gridN = N;
     out.ring.reserve(size_t(rings));
     for (int i = 0; i < rings; ++i) {
-        const float t = (rings > 1) ? float(i) / float(rings - 1) : 0.0f;
+        const float t = float(i) / float(rings - 1);
         out.ring.push_back(psfFromPupil(pp, wavefrontAtT(t), lambdaNm, lambdaRefNm, t, N));
     }
-    if (!out.ring.empty()) {
-        double s = 0.0;
-        for (float v : out.ring.front().v) s += v;
-        out.axisEnergy = (s > 0.0) ? s : 1.0;
-    }
+    out.axisEnergy = axisEnergyOf(out.ring.front());
     return out;
 }
 
@@ -51,6 +89,16 @@ inline PsfRings buildPsfRings(const PupilParams& pp,
 // kernel sums to 1 and off-axis kernels carry vignetting as a ratio to it.
 inline Plane psfAtField(const PsfRings& r, float t, float thetaRad,
                         float samplesPerPixel, int outSize) {
+    // r was not necessarily built by buildPsfRings, so its invariant (at
+    // least 2 rings) cannot be assumed to hold; without this check a bad
+    // PsfRings drives i0 to -1 below and r.ring[-1] is out-of-bounds.
+    if (r.ring.size() < 2) {
+        throw std::invalid_argument(
+            "psfAtField: PsfRings must contain at least 2 rings (got " +
+            std::to_string(r.ring.size()) +
+            "); build it with buildPsfRings(..., rings >= 2, ...)");
+    }
+
     const int n = int(r.ring.size());
     const float ft = std::clamp(t, 0.0f, 1.0f) * float(n - 1);
     const int i0 = std::clamp(int(ft), 0, n - 2);
