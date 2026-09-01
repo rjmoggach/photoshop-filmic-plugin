@@ -1086,6 +1086,20 @@ TEST_CASE("BK7 hits its published index at the d line") {
     CHECK(refractiveIndex(bk7(), 587.6f) == doctest::Approx(1.5168f).epsilon(1e-3));
 }
 
+TEST_CASE("BK7 reproduces its published Abbe number, pinning the whole curve shape") {
+    // One index value would tolerate a wrong B/C pair that happens to land near 1.5168
+    // at the d-line while distorting dispersion elsewhere. The Abbe number is built from
+    // three points, so it pins the SHAPE of the curve, not just one height on it.
+    const Dispersion d = bk7();
+    const float nd = refractiveIndex(d, 587.56f);
+    const float nF = refractiveIndex(d, 486.13f);
+    const float nC = refractiveIndex(d, 656.27f);
+    CHECK(nd == doctest::Approx(1.51680f).epsilon(1e-4));
+    CHECK(nF == doctest::Approx(1.52238f).epsilon(1e-4));
+    CHECK(nC == doctest::Approx(1.51432f).epsilon(1e-4));
+    CHECK((nd - 1.0f) / (nF - nC) == doctest::Approx(64.17f).epsilon(2e-3));
+}
+
 TEST_CASE("dispersion is normal, index falls as wavelength rises") {
     const Dispersion d = bk7();
     float prev = refractiveIndex(d, 400.0f);
@@ -1096,13 +1110,22 @@ TEST_CASE("dispersion is normal, index falls as wavelength rises") {
     }
 }
 
-TEST_CASE("an uncorrected singlet has monotonic focus error") {
+TEST_CASE("an uncorrected singlet has monotonic focus error, rising with wavelength") {
+    // Sign convention: focusError returns the relative focal LENGTH error,
+    // F(lambda)/F_ref - 1. Blue has a higher refractive index, so a shorter focal
+    // length, so it focuses CLOSER than the reference -- a negative error. Red
+    // focuses further away -- positive. The error therefore RISES with wavelength.
+    // Getting this backwards returns relative optical power instead, which is the
+    // exact negative, and would make chromatic defocus oppose field curvature
+    // downstream rather than add to it.
     Dispersion d = bk7();
     d.correction_nm.clear();
+    CHECK(focusError(d, 400.0f, 650.0f) < 0.0f);   // blue focuses closer
+    CHECK(focusError(d, 760.0f, 650.0f) > 0.0f);   // red focuses further
     float prev = focusError(d, 400.0f, 650.0f);
     for (float l = 420.0f; l <= 760.0f; l += 20.0f) {
         const float e = focusError(d, l, 650.0f);
-        CHECK(e < prev);
+        CHECK(e > prev);
         prev = e;
     }
 }
@@ -1169,7 +1192,10 @@ inline float refractiveIndex(const Dispersion& d, float lambda_nm) {
     return float(std::sqrt(n2));
 }
 
-// Raw relative focal-length error before correction.
+// Raw relative focal-length error before correction: F(lambda)/F_ref - 1.
+// Focal length goes as 1/(n-1), so the ratio is (nRef-1)/(n-1). NOT (n-1)/(nRef-1),
+// which is the relative optical power -- the negative of this -- and would flip the
+// sign of chromatic defocus everywhere downstream.
 inline float rawFocusError(const Dispersion& d, float lambda_nm, float lambda_ref_nm) {
     const float nRef = refractiveIndex(d, lambda_ref_nm);
     const float n    = refractiveIndex(d, lambda_nm);
@@ -1298,9 +1324,12 @@ TEST_CASE("identity warp reproduces the source") {
 }
 
 TEST_CASE("positive K pushes a feature outward from the centre") {
+    // K must be large enough to move a DISCRETE pixel argmax. At K = 0.01 the feature at
+    // this radius shifts well under half a pixel, so the assertion below would be
+    // mathematically unsatisfiable no matter how correct the code is.
     const int w = 129, h = 129;
     const Plane src = dot(w, h, 100, 64);          // right of centre
-    const Plane out = warpPlane(src, Distortion{}, 0.01f);
+    const Plane out = warpPlane(src, Distortion{}, 0.08f);
     float best = -1.0f; int bx = 0;
     for (int x = 0; x < w; ++x) if (out.at(x, 64) > best) { best = out.at(x, 64); bx = x; }
     CHECK(bx > 100);
@@ -1418,11 +1447,21 @@ inline float lateralMagnification(float k_l, float lambda_nm, float lambda_hat_n
 }
 
 // Solves t_out = t_src * (1 + K * t_src) for t_src.
+//
+// The textbook root, (-1 + sqrt(disc)) / (2K), is NUMERICALLY WRONG here. For small K
+// it subtracts two nearly-equal numbers and then divides by a small denominator --
+// catastrophic cancellation. Measured in float32 its worst relative error is 1.4e-3,
+// over a hundred times this function's own test threshold, and it grows as K shrinks.
+// Small K is a WELL-CORRECTED lens, so the naive form is least accurate on the best glass.
+//
+// Rationalising by (1 + sqrt(disc)) gives an algebraically identical expression with no
+// subtraction of like quantities and no division by K, accurate to ~1e-7 and continuous
+// as K approaches zero:
+//     (-1 + sqrt(d)) / 2K  ==  (d - 1) / (2K (1 + sqrt(d)))  ==  2*tOut / (1 + sqrt(d))
 inline float inverseLateralRadius(float K, float tOut) {
-    if (std::abs(K) < 1e-12f) return tOut;
     const float disc = 1.0f + 4.0f * K * tOut;
     if (disc <= 0.0f) return tOut;                    // outside the invertible range
-    return (-1.0f + std::sqrt(disc)) / (2.0f * K);
+    return 2.0f * tOut / (1.0f + std::sqrt(disc));    // K == 0 falls out as tOut, no branch
 }
 
 // One resample applies magnification and distortion together, never twice.
