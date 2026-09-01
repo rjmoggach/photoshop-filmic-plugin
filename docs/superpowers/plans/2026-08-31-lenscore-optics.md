@@ -22,6 +22,10 @@
 - Golden images are **PFM**. Comparison is by metric tolerance, never byte equality.
 - Every public function that takes an angle takes **radians**. Every function that takes a wavelength takes **nanometres**. Every field radius `t` is **normalised so that the image corner is 1.0**.
 - Tests run under `ctest`. A task is not done until `ctest --output-on-failure` is green.
+- **Never use `M_PI`.** It is a POSIX extension, not standard C++, and MSVC omits it
+  unless `_USE_MATH_DEFINES` is set — while this project builds with `CXX_EXTENSIONS OFF`
+  and targets Windows as well as macOS. Any test needing pi declares it locally:
+  `static constexpr double kPi = 3.14159265358979323846;`
 
 ## File Structure
 
@@ -1742,7 +1746,7 @@ static double innerProduct(int n1, int m1, int n2, int m2) {
     for (int i = 0; i < NR; ++i) {
         const double rho = (i + 0.5) / NR;
         for (int j = 0; j < NT; ++j) {
-            const double th = 2.0 * M_PI * (j + 0.5) / NT;
+            const double th = 2.0 * kPi * (j + 0.5) / NT;
             const double w = rho;                       // Jacobian
             acc  += w * zernike(n1, m1, float(rho), float(th)) * zernike(n2, m2, float(rho), float(th));
             norm += w;
@@ -1782,12 +1786,12 @@ TEST_CASE("the basis is orthonormal over the unit disc") {
 
 TEST_CASE("astigmatism separates the sagittal and tangential axes") {
     CHECK(zernike(2, 2, 1.0f, 0.0f) > 0.0f);
-    CHECK(zernike(2, 2, 1.0f, float(M_PI) / 2.0f) < 0.0f);
+    CHECK(zernike(2, 2, 1.0f, float(kPi) / 2.0f) < 0.0f);
 }
 
 TEST_CASE("coma is antisymmetric about the tangential axis") {
     const float a = zernike(3, 1, 0.8f, 0.0f);
-    const float b = zernike(3, 1, 0.8f, float(M_PI));
+    const float b = zernike(3, 1, 0.8f, float(kPi));
     CHECK(a == doctest::Approx(-b).epsilon(1e-5));
 }
 
@@ -2345,7 +2349,7 @@ static double ringMean(const Plane& p, double r) {
     const double cx = p.w / 2.0, cy = p.h / 2.0;
     double acc = 0.0; int n = 0;
     for (int k = 0; k < 720; ++k) {
-        const double a = 2.0 * M_PI * k / 720.0;
+        const double a = 2.0 * kPi * k / 720.0;
         const int x = int(std::lround(cx + r * std::cos(a)));
         const int y = int(std::lround(cy + r * std::sin(a)));
         if (x >= 0 && y >= 0 && x < p.w && y < p.h) { acc += p.at(x, y); ++n; }
@@ -2457,7 +2461,7 @@ TEST_CASE("an even blade count gives that many diffraction spikes") {
 
     std::vector<double> ang(360);
     for (int k = 0; k < 360; ++k) {
-        const double a = 2.0 * M_PI * k / 360.0;
+        const double a = 2.0 * kPi * k / 360.0;
         double acc = 0.0;
         for (double r = 14.0; r < 34.0; r += 1.0) {
             const int x = int(std::lround(N / 2.0 + r * std::cos(a)));
@@ -3040,7 +3044,7 @@ TEST_CASE("Siemens star is rotationally periodic in the spoke count") {
     };
     for (int k = 0; k < 8; ++k) {
         const double a = 0.31 + k * 0.4;
-        CHECK(sample(a) == doctest::Approx(sample(a + 2.0 * M_PI / 16.0)).epsilon(0.05));
+        CHECK(sample(a) == doctest::Approx(sample(a + 2.0 * kPi / 16.0)).epsilon(0.05));
     }
 }
 
@@ -3382,7 +3386,7 @@ inline float mtf50(const Plane& roi) {
     // Line spread function, Hamming windowed to suppress ringing.
     std::vector<conv::Cplx> lsf(NB, conv::Cplx(0, 0));
     for (int i = 1; i < NB; ++i) {
-        const double w = 0.54 - 0.46 * std::cos(2.0 * M_PI * i / (NB - 1));
+        const double w = 0.54 - 0.46 * std::cos(2.0 * kPi * i / (NB - 1));
         lsf[i] = conv::Cplx(float((esf[i] - esf[i - 1]) * w), 0.0f);
     }
     conv::fft1d(lsf, false);
