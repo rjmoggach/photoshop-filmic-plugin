@@ -1,7 +1,7 @@
 # Filmic Lens Plugin for Photoshop — Design
 
 Date: 2026-08-31
-Status: approved design, pre-implementation
+Status: approved design, revised after reading the reference set
 
 ## 1. Goal
 
@@ -18,10 +18,14 @@ physics as explicit deviations, never in place of it.
 ## 2. Non-goals
 
 - Video, batch processing, or Lightroom/Camera Raw integration.
-- Lens flare ghosts (inter-element reflections). Deferred to a later release;
-  the data format reserves a `flare.ghosts` field for it.
+- Lens flare ghosts (inter-element reflections). Deferred; the data format
+  reserves `flare.ghosts`, and Hullin's two-reflection path enumeration is the
+  route in when we want it.
 - Lens *correction* (removing aberration). We only add.
 - Automatic lens detection from EXIF.
+- Azimuthal asymmetry of vignetting from iris-blade decentring. Real but small
+  (Aggarwal measured ~1.2% over the full 2*pi), and it costs rotational
+  symmetry, which is one of our cheapest correctness tests.
 
 ## 3. Architecture
 
@@ -54,27 +58,32 @@ Four components. Only one is coupled to Adobe.
 lenscore/
   color/     transfer.hpp     EOTF / inverse EOTF, highlight recovery
              cie.hpp          CIE 1931 CMFs, spectrum -> XYZ -> linear RGB
-             upsample.hpp     RGB -> reflectance spectrum (Jakob-Hanika)
-  optics/    dispersion.hpp   Sellmeier / Abbe -> n(lambda) -> F(lambda)
+             upsample.hpp     RGB -> spectrum (Jakob-Hanika sigmoid model)
+  optics/    dispersion.hpp   Sellmeier n(lambda) + secondary-spectrum residual
              distortion.hpp   Brown-Conrady radial + tangential
              lateralca.hpp    per-wavelength magnification
-             pupil.hpp        entrance/exit pupil clip, cat's-eye, blade polygon
-             zernike.hpp      Zernike basis for defocus/astig/coma/spherical
-             psf.hpp          assembles the PSF at a given field radius
-             vignette.hpp     natural + mechanical + optical falloff
-             glare.hpp        veiling glare PSF, diffraction star
-  film/      halation.hpp     per-channel back-scatter re-exposure
-             grain.hpp        stochastic Boolean-disc grain
-             printvig.hpp     print/gate vignette, gate weave
+             pupil.hpp        aperture polygon, cat's-eye clip, apodization ramp
+             zernike.hpp      Zernike basis for the wavefront error
+             psf.hpp          generalized pupil function -> PSF via one FFT
+             vignette.hpp     natural falloff + mechanical clip
+             glare.hpp        veiling glare spread function
+  film/      sensitivity.hpp  per-layer spectral sensitivity
+             mtf.hpp          emulsion and print internal scattering
+             halation.hpp     back-reflection re-exposure
+             hd.hpp           H&D characteristic curve, negative and print
+             grain.hpp        Newson stochastic Boolean-disc grain
+             printvig.hpp     print falloff, gate weave
   conv/      fft.hpp          real FFT
              eff.hpp          Efficient Filter Flow: patched varying convolution
   pipeline.hpp                stage ordering, the one public entry point
   params.hpp                  versioned POD parameter struct
 lensdata/    *.lens  *.stock  JSON parameter sets
+             rgb2spec/        precomputed spectral upsampling tables
 lenscli/     main.cpp
 lens8bf/     pipl.r  main.cpp  tiles.cpp  descriptors.cpp  colour.cpp
 lensui/      app.cpp  preview.cpp  backends/{metal,d3d11}
-lensfit/     calibration tool: chart photos -> .lens file
+lensfit/     calibration tool: chart photos or a prescription -> .lens file
+rgb2spec/    one-off generator for the spectral upsampling tables
 tests/       golden/  metrics/{mtf.cpp,vignette.cpp,fringe.cpp,energy.cpp}
 ```
 
@@ -83,210 +92,369 @@ responsibilities and should split.
 
 ## 4. Pipeline
 
-The stage order is physical, not arbitrary. Lens effects form the image;
-film effects happen in and behind the emulsion; grain is the last thing
-that touches the signal.
+The stage order is physical, not arbitrary. The lens forms an image; the
+emulsion records it; the print reproduces it.
 
 ```
 document pixels
   |
   1. decode          -> linear scene-referred RGB, highlight recovery
-  2. spectral uplift -> per-pixel reflectance spectrum (CA stage only)
-  3. lateral CA      -> per-wavelength radial magnification
-  4. varying PSF     -> axial CA + field curvature + astigmatism + coma
-                        + cat's-eye pupil clip, convolved per wavelength
+  2. spectral uplift -> per-pixel smooth spectrum (Jakob-Hanika)
+  --- lens ---
+  3. lateral CA      -> per-wavelength radial magnification + distortion
+  4. varying PSF     -> one generalized-pupil FFT per (field radius, lambda):
+                        defocus, secondary spectrum, field curvature,
+                        astigmatism, coma, spherical, cat's-eye clip,
+                        pupil apodization, blade polygon, diffraction
   5. integrate       -> spectrum back to linear RGB through CIE CMFs
-  6. vignette        -> natural cos^4 x mechanical pupil clip
-  7. glare / bloom   -> veiling glare halo + aperture diffraction star
-  --- lens ends, film begins ---
-  8. halation        -> per-channel back-scatter, red widest
-  9. print vignette  -> print stage falloff
- 10. grain           -> signal-dependent stochastic grain
- 11. encode          -> back to document space, dither if 8-bit
+  6. vignette        -> natural falloff x mechanical pupil clip
+  7. veiling glare   -> broad low-amplitude scatter halo
+  --- film ---
+  8. sensitivity     -> per-layer (R/G/B dye) spectral response
+  9. emulsion MTF    -> internal scattering within the emulsion
+ 10. halation        -> back-reflection re-exposure, red widest
+ 11. H&D (negative)  -> characteristic curve to density
+ 12. grain           -> stochastic Boolean-disc, density-dependent
+ 13. print           -> paper H&D cascade, print MTF, print vignette
+ 14. encode          -> density to transmission, back to document space
 ```
 
 Stages 2-5 are one fused loop over wavelength bands, not four passes. Each
-band is magnified, convolved, and accumulated into the XYZ sum in a single
-traversal, so the intermediate spectral image never exists in memory.
+band is magnified, convolved, and accumulated into the running XYZ sum in a
+single traversal, so the intermediate spectral image never exists in memory.
+
+Every stage is individually switchable. A user who wants only chromatic
+aberration pays for stages 1-5 and 14.
 
 ### 4.1 Stage 1 — decode and highlight recovery
 
 Convert the document to linear scene-referred RGB using the document's ICC
 profile transfer function.
 
-**Highlight recovery is not optional.** Halation, bloom, and defocus bokeh are
-all driven by values far above diffuse white. An 8-bit or display-referred
-image clips everything to 1.0, and blooming a clipped image produces the flat,
-grey, obviously-fake glow that gives away every cheap lens plugin. We apply an
-inverse-knee expansion above a threshold (default 0.85) that lifts near-white
-pixels to a configurable peak (default 8.0 linear). Users working in 32-bit
-scene-referred float can switch it off, because their highlights are real.
+**Highlight recovery is not optional.** Halation, glare, and defocus bokeh are
+all driven by values far above diffuse white. A display-referred image clips
+everything to 1.0, and blooming a clipped image produces the flat grey glow
+that gives away every cheap lens plugin. We apply an inverse-knee expansion
+above a threshold (default 0.85) that lifts near-white pixels to a
+configurable peak (default 8.0 linear). Users in 32-bit scene-referred float
+switch it off, because their highlights are real.
 
 ### 4.2 Stage 2 — spectral uplift
 
-The optics are spectral but the input is RGB. We reconstruct a plausible
-smooth spectrum per pixel using the Jakob-Hanika sigmoid-polynomial model:
-three coefficients per pixel, evaluated analytically at each wavelength, with
-a precomputed coefficient lookup table. It is smooth, energy-sane, and cheap.
+The optics are spectral but the input is RGB. We use the Jakob-Hanika model:
+
+```
+f(lambda) = S(c0*lambda^2 + c1*lambda + c2)
+S(x)      = 1/2 + x / (2*sqrt(1 + x^2))
+```
+
+Six floating-point operations per wavelength (two FMAs and an rsqrt),
+trivially vectorised. Coefficients `(c0,c1,c2)` come from a trilinear lookup
+into a `3 x 64^3` table: find the largest RGB component `i`, normalise the
+other two by it, and index `table[i]` by `(c[(i+1)%3]/max, c[(i+2)%3]/max,
+max)`. The `alpha` axis is discretised as `smoothstep(smoothstep(i/63))`,
+which concentrates resolution where the coefficients move fastest.
+
+**Radiance, not reflectance.** The model produces bounded reflectance spectra.
+Our pixels are radiance and legally exceed 1.0. We therefore upsample the
+*normalised* colour and carry `max(r,g,b)` as a separate scalar multiplier.
+HDR values pass through untouched.
+
+**Table generation.** The tables are ours to build: `rgb2spec` runs a
+Gauss-Newton fit per grid cell against the CIE objective, ~10-60s per colour
+space, and the result is committed as a binary asset. We ship tables for
+sRGB/Rec.709 and Rec.2020 linear.
+
+**Caveat to record.** The model minimises error projected onto the CIE colour
+matching functions. It is valid because we integrate back through those same
+CMFs. Retargeting to a camera's response curves would require refitting, not
+merely a different `3x3` matrix.
 
 Two quality tiers:
 
-- **Spectral** (default, N = 11 bands over 380-780nm): full dispersion, real
-  purple and green fringes.
-- **RGB** (preview, N = 3 at 650 / 510 / 475nm, per Jeong): three times
-  faster, visibly banded on strong dispersion. Preview only.
-
-Band placement uses **spectral importance sampling** through the inverse CDF
-of the spectral equalizer weights (Jeong Sec. 5.2). Uniform sampling at N = 11
-bands produces visible spectral banding; importance sampling does not.
+- **Spectral** (default, N = 11 bands over 380-780nm) with **spectral
+  importance sampling** through the inverse CDF of the equalizer weights.
+  Uniform sampling at this count bands visibly; importance sampling does not.
+- **RGB** (preview, N = 3 at 650 / 510 / 475nm). Three times faster, banded on
+  strong dispersion. Preview only.
 
 ### 4.3 Stage 3 — lateral chromatic aberration
 
-Per-wavelength magnification about the optical centre (Jeong Eq. 8):
+Per-wavelength magnification about the optical centre:
 
 ```
 m(lambda, t) = 1 + k_l * (lambda_hat - lambda) * L(t, theta)
 ```
 
-`t` is normalised field radius (0 at centre, 1 at the corner), `lambda_hat`
-= 650nm is the reference so magnification is never negative, `k_l` comes from
-the `.lens` file. `L(t, theta) = t` is the physical baseline; the expressive
-layer replaces `L` with a composite mapping (Sec. 6).
+`t` is normalised field radius, `lambda_hat` = 650nm is the reference so
+magnification never goes negative, `k_l` comes from the `.lens` file.
+`L(t, theta) = t` is the physical baseline; the expressive layer replaces `L`
+with a composite mapping (Sec. 6).
 
 Brown-Conrady radial and tangential distortion applies in the same resample,
-so the image is warped once, not twice.
+so the image is warped once, not twice. Aggarwal's point-grid photographs
+confirm the two are entangled in reality: PSF centres are measurably further
+apart at the periphery than at the centre.
 
-### 4.4 Stage 4 — the spatially varying PSF
+### 4.4 Stage 4 — the PSF, from one Fourier transform
 
 This is the hard stage and the one that makes or breaks the look.
 
-**Kernel shape.** The base defocus kernel is a **disc**, not a Gaussian
-(ChromaBlur Alg. 1: defocus of a planar subject is convolution with a cylinder
-kernel). A Gaussian defocus is the single most common tell of a fake lens
-effect. On top of the disc:
+**The unifying formulation.** Rather than assembling a kernel from separate
+disc, ellipse, star and clip terms, we compute the PSF the way physical optics
+defines it — as the squared modulus of the Fourier transform of the
+generalized pupil function:
 
-- **Blade polygon.** At apertures below wide open, the disc becomes an
-  N-sided polygon with per-blade curvature, rotated by the blade angle.
-- **Cat's-eye clip.** Off axis, the pupil is the intersection of the aperture
-  disc with the entrance and exit pupil circles, displaced by field angle.
-  The kernel becomes lemon-shaped and tilts tangentially. This produces swirl
-  as an emergent property, not as a rotation filter.
-- **Astigmatism.** Sagittal and tangential focus differ off axis, so the
-  kernel stretches into an ellipse oriented radially or tangentially. Modelled
-  as Zernike `Z(2,+/-2)` scaled by `t^2`.
-- **Coma.** Zernike `Z(3,1)`, giving the kernel a comet tail pointing away
-  from centre, scaled by `t^3`.
-- **Diffraction.** At small apertures, convolve the pupil with the Airy
-  pattern. This also produces the aperture star for point highlights.
+```
+PSF(u, v; lambda, t) = | FFT{ A(x, y; t) * exp( i * 2*pi/lambda * W(x, y; t) ) } |^2
+```
+
+- `A` is the **pupil amplitude**: the aperture polygon (blade count, per-blade
+  curvature, rotation), intersected with the cat's-eye clip, multiplied by the
+  apodization ramp.
+- `W` is the **wavefront error** in a Zernike basis: defocus `Z(2,0)`,
+  astigmatism `Z(2,+/-2)`, coma `Z(3,+/-1)`, spherical `Z(4,0)`.
+
+Everything falls out of this single calculation. Diffraction, the aperture
+star, the soft-edged disc, the lemon-shaped off-axis kernel, the comet tail,
+the intensity gradient across the pupil — all of it, with no special cases and
+no risk of the parts contradicting each other. It is also the formulation
+ChromaBlur uses.
+
+**Pupil apodization — the term that is easy to miss.** An off-axis point does
+*not* illuminate the pupil uniformly. Nonlinear refraction through the
+elements skews the distribution, an effect Aggarwal calls pupil aberration and
+measured at up to **31% variation across the pupil at a 10 degree field angle
+on a 16mm lens**. It shifts the pupil centroid, which makes the fall-off
+surface depend on aperture in ways `cos^4` and mechanical vignetting together
+cannot explain. We model it as Aggarwal's own planar approximation: a linear
+intensity ramp across the pupil, radially oriented, slope proportional to
+field angle. One extra parameter, real measured effect.
 
 **Defocus radius.** Two contributions sum:
 
-1. **Axial CA.** Focal length varies with wavelength via Sellmeier (Jeong
-   Eq. 4) and the lens-maker's equation (Eq. 3), giving a per-wavelength focal
-   depth `d_f(lambda)` (Eq. 5) and a circle of confusion `C = ((d_f - d)/d_f) * E`
-   (Eq. 2). BK7 defaults: `B = [1.03961, 0.23179, 1.01047]`,
-   `C = [0.00600, 0.02002, 103.56065]` in micrometres squared.
-2. **Petzval field curvature.** The focal surface is a sphere, so defocus
-   grows with `t^2` even for a flat subject.
+1. **Longitudinal chromatic aberration**, below.
+2. **Petzval field curvature**: the focal surface is a sphere, so defocus grows
+   with `t^2` even for a flat subject.
 
-**The depth problem, and the decision.** A 2D photograph has no depth map, but
-axial CA needs an object distance `d`. Resolved as follows:
+**Secondary spectrum — the correction that matters most.** Modelling
+dispersion with a bare Sellmeier `n(lambda)` describes a *single uncorrected
+element*. Its focal length varies monotonically with wavelength, producing a
+red-to-blue rainbow. **Real photographic lenses are achromats or apochromats**
+— corrected so that focus coincides at two (or three) wavelengths. Their
+residual longitudinal error is the *secondary spectrum*: a curve that crosses
+zero at the correction wavelengths and bulges between and beyond them. It is
+why real lenses fringe green and magenta rather than red and blue.
 
-- **Default**: the image is taken to lie on the focal surface, so `d` comes
-  entirely from field curvature. Axial CA then varies with `t^2`, which is the
-  physically correct behaviour for a flat subject and needs no extra input.
-- **Optional**: the user designates a layer or channel as a depth map. `d` is
-  then read per pixel and true focus-plane axial CA appears. Exposed as a
-  "Depth source" dropdown, default None.
+So: take Sellmeier for the shape, then subtract the linear (achromat) or
+quadratic (apochromat) fit in `1/lambda^2` that zeroes the error at the
+correction wavelengths, and scale by a measured residual magnitude.
 
-This is stated explicitly because it is the one place the model is
-under-determined by the input.
+```
+d_f(lambda) = d_f_ref * ( 1 + secondary(lambda; correction_nm[], residual) )
+```
+
+The `.lens` file names the correction wavelengths, so a cheap achromatic
+doublet, a modern apochromatic cine prime, and an uncorrected vintage singlet
+are three settings of one model rather than three code paths.
+
+**Depth, and the decision.** A 2D photograph has no depth map, but defocus
+needs an object distance. Resolved as follows:
+
+- **Default**: the subject lies on the focal surface, so defocus comes entirely
+  from field curvature and grows with `t^2`. Physically correct for a flat
+  subject, and needs no extra input.
+- **Optional**: the user designates a layer or channel as a depth map, and true
+  focus-plane defocus appears. A "Depth source" dropdown, default None.
+
+Stated explicitly because it is the one place the model is under-determined by
+the input.
 
 **Fast evaluation.** A naive per-pixel elliptical gather at a 20px radius over
 50 megapixels is roughly 2e10 operations per wavelength band. Not viable.
-We use **Efficient Filter Flow** (Hirsch/Schuler): partition into overlapping
-patches, assign one PSF per patch, FFT-convolve each, and recombine with a
-partition-of-unity window. Cost is `O(N log P)`.
+We use **Efficient Filter Flow**: cover the image with overlapping patches,
+assign one PSF per patch, and evaluate
 
-One refinement that matters: our PSF is **rotationally covariant**. Its shape
-depends only on field radius `t`; at a different angle `theta` it is the same
-kernel rotated. So the PSF table collapses from 2D to a **1D function of `t`**,
-patches are laid out in polar rings, and each ring's kernel is computed once
-and rotated per patch. This cuts PSF construction cost by roughly the number
-of angular divisions and guarantees exact rotational symmetry, which is
-directly asserted in the test suite.
+```
+y = sum_r  L_r^T F^H Diag(F P f^(r)) F K_r Diag(w^(r)) x
+```
+
+where `K_r` crops patch `r`, `Diag(w)` applies its window, `F` is the DFT, `P`
+zero-pads the kernel, and `L_r^T` accumulates the result. The windows form a
+partition of unity, so patch PSFs interpolate smoothly. Cost is `O(N log P)`.
+Schuler used an 18x27 support grid on a 21MP image and found bilinear
+interpolation between measured PSFs sufficient; our PSFs are analytic and
+smoother still.
+
+**Do not normalise the PSF.** Its total energy *is* the optical vignetting —
+the cat's-eye clip removes light exactly as the barrel does. Schuler makes the
+same point from the correcting side: relaxing the filters from `sum = 1` to
+`sum <= 1` folds vignetting into the same operator for free. Stage 6 therefore
+adds only the terms the pupil does not already contain.
+
+**The rotational-covariance collapse.** The PSF's shape depends only on field
+radius `t`; at a different angle it is the same kernel, rotated. So the PSF
+table is a **1D function of `t`**, patches are laid out in polar rings, one
+kernel is computed per ring and rotated per patch. This cuts PSF construction
+by the number of angular divisions and makes exact rotational symmetry a
+structural guarantee, which the test suite asserts directly.
+
+**Alternate derivation path.** When the input is a lens *prescription* (radii,
+thicknesses, glasses) rather than photographs, Hullin's polynomial optics gives
+the coefficients. A degree-3 Taylor expansion of the ray mapping decomposes
+into exactly the classical groups, in reduced ray coordinates
+`(r_x, r_y, d_x, d_y)`:
+
+```
+distortion:      r'_x = -r_x  +/-  a_radial * r_x (r_x^2 + r_y^2)
+coma:            r'_x = -r_x  +/-  a_coma   * (3 r_x d_x^2 + 2 r_y d_x d_y + r_x d_y^2)
+field curvature: r'_x = -r_x  +/-  a_curv   * (3 r_x^2 d_x + 2 r_x r_y d_y + r_y^2 d_x)
+spherical:       r'_x = -r_x  +/-  a_sph    * d_x (d_x^2 + d_y^2)
+```
+
+Degree 3 suffices; degree 5 changes the result marginally at real cost. Note
+two cautions Hullin records: the expansion is centred on the axis and degrades
+at the extreme periphery, which is another argument for our per-ring PSFs; and
+Seidel's aberration names do not map exactly onto this basis, though as they
+put it, these phenomena do not occur in isolated form in real optics either.
+`lensfit` uses this path to produce Zernike coefficients; the renderer stays
+on the Fourier formulation.
 
 ### 4.5 Stage 6 — vignetting
 
-Three multiplicative terms, following Aggarwal/Hua/Ahuja on why `cos^4` alone
-is insufficient for real lenses:
+The pupil clip in stage 4 already removed the optical component. Two terms
+remain:
 
-1. **Natural falloff.** `cos^n(theta)` with `theta = atan(r / f)`. `n = 4` is
-   the ideal case; the exponent is exposed because real lenses with
-   non-coincident pupils deviate from it.
-2. **Mechanical vignetting.** The entrance pupil is clipped by the barrel and
-   by the rear element. Computed as the overlap area of the aperture circle
-   with two circles offset by field angle, divided by the unclipped area. This
-   yields the correct hard shoulder wide open, and correctly rounds toward
-   pure `cos^n` as the lens stops down.
-3. **Optical vignetting.** Already implicit: stage 4 clips the kernel, so
-   energy is lost off axis automatically. We only normalise here, and assert
-   the two paths agree.
+1. **Natural falloff**, `cos^n(theta)` with `theta = atan(r/f)`. `n = 4` is the
+   textbook ideal. **The exponent must be free**: Aggarwal measured three real
+   lenses across six apertures and the fall-off curves *"do not coincide with
+   the cosine-fourth curves for any of the aperture settings"* — not even
+   stopped fully down, where vignetting is absent and `cos^4` should be exact.
+2. **Mechanical vignetting**, the overlap area of the aperture circle with the
+   entrance and exit pupil circles displaced by field angle. It must **vanish
+   above roughly f/4** and dominate at f/2.8 and wider; that threshold is a
+   measured result, and the model reproduces it rather than assuming it.
 
-### 4.6 Stage 7 — glare and bloom
+A consistency test asserts that the energy lost by the stage-4 pupil clip
+matches the mechanical term computed independently here.
 
-Veiling glare is scattering inside the barrel, and it is **not Gaussian**. Its
-PSF has a heavy power-law tail spanning most of the frame at very low
-amplitude. We model it as a sum of three Gaussians fitted to a power-law
-profile, applied to the highlight-thresholded image in linear light.
+### 4.6 Stage 7 — veiling glare
 
-The diffraction star comes free from stage 4's Airy convolution with the blade
-polygon; blade count sets the point count (even blades give N points, odd
-blades give 2N).
+Scattering inside the barrel and off the sensor. Talvala's measurements give
+us both the shape and the magnitude:
 
-### 4.7 Stages 8-10 — the film layer
+- The glare spread function is `gsf = delta * (1-k) + k * b`, energy-conserving,
+  where `b` is the broad component. Applying it forward is one convolution.
+- `b` is **not** a single Gaussian. Glare has a steep high-frequency falloff
+  near a bright point *and* a smooth low-frequency floor across the whole
+  frame. Talvala fit theirs as a combination of Gaussians of different widths;
+  we do the same, with three components.
+- **Magnitude is specified in f-stops below the source**, which is how it was
+  measured and how a lens person reasons: a good DSLR prime sits about **20
+  stops down**, a compact camera about **16**. Ghost count and glare level both
+  scale with the number of air-glass surfaces.
 
-- **Halation.** Light passes through the emulsion, reflects off the film base,
-  and re-exposes the emulsion from behind. Red penetrates deepest, so the red
-  radius is the largest and the halo is orange-red. Modelled per channel:
-  threshold in linear, convolve with a sum-of-Gaussians scatter profile, scale,
-  add back. Anti-halation backing strength is a stock parameter.
-- **Print vignette and gate weave.** A second, softer, non-optical falloff
-  from the printing stage, plus a sub-pixel positional jitter.
-- **Grain.** Uniform noise is wrong: real grain is signal-dependent, has a
-  size distribution, and is spatially correlated. We use the Newson/Delon/
-  Galerne stochastic Boolean-disc model — a Poisson field of discs with a
-  log-normal radius distribution, per channel, with density driven by local
-  exposure. It is resolution-independent, which matters because Photoshop
-  documents vary enormously in size and grain must not change character when
-  the same stock is applied at a different resolution.
+Talvala notes the GSF is not truly shift-invariant — its shape, size and even
+colour vary across the field. That defeats their *inverse* problem. For
+forward synthesis a shift-invariant GSF is a defensible approximation, and we
+expose an optional field-radius scale for users who want the corner falloff.
 
-### 4.8 Stage 11 — encode
+The aperture diffraction star is not modelled here. It already came out of
+stage 4's pupil transform, at the correct brightness relative to the halo.
 
-Inverse of stage 1. When the document is 8-bit, apply triangular-PDF dither
-before quantising; the wide, low-amplitude gradients produced by vignette and
-glare band severely without it.
+### 4.7 Stages 8-13 — the film
+
+Not a look-up curve. Following Geigel and Musgrave, film is a cascade of
+measurable sensitometric stages, run **twice** — once for the negative and
+once for the print. That double cascade is where film's characteristic
+contrast actually comes from.
+
+- **Spectral sensitivity (8).** Each dye layer has its own response curve.
+  Exposure per layer is the spectrum integrated against that curve. This is
+  what makes a tungsten stock render daylight the way it does.
+- **Emulsion MTF (9).** Light scatters *between grains inside* the emulsion,
+  degrading resolution independently of grain itself. A typical emulsion MTF
+  falls to 0.1 around 100-150 cycles/mm. Modelled as a per-layer low-pass.
+- **Halation (10).** Light crosses the emulsion, reflects off the film base,
+  and re-exposes from behind. Red penetrates deepest, so the red radius is
+  largest and the halo reads orange-red. Threshold in linear, convolve with a
+  per-layer sum-of-Gaussians scatter profile, add back. Anti-halation backing
+  strength is a stock parameter; stocks with effective backing get a small
+  radius rather than a special case.
+- **H&D characteristic curve (11).** The density response: toe, straight-line
+  section whose slope is gamma, shoulder, and the solarisation rollover beyond
+  it. Per layer. Specified as sampled `(log E, D)` points read straight off a
+  datasheet, linearly interpolated. **This stage was missing from the first
+  draft and it is roughly half of what people mean by a filmic look.**
+- **Grain (12).** Newson's stochastic Boolean model. Grains are discs of
+  log-normally distributed radius placed by an inhomogeneous Poisson process
+  whose local intensity is derived from the image itself:
+
+  ```
+  lambda(y) = 1 / (pi * (mu_r^2 + sigma_r^2)) * log( 1 / (1 - u_tilde(floor(y))) )
+  ```
+
+  This choice makes the mean area covered equal the local grey level, so
+  **contrast is preserved exactly** and grain is signal-dependent by
+  construction rather than by a fudge. Rendering is Monte Carlo: `N` sample
+  offsets drawn from `N(0, sigma^2 I)`, averaged; `sigma` is the perceptual
+  low-pass.
+
+  **Use the pixel-wise algorithm, not the grain-wise one.** Storing grain
+  positions costs 35GB at 2048x2048 with a small radius; a 50MP Photoshop
+  document is out of the question. The pixel-wise variant generates grains
+  on the fly from a per-cell PRNG keyed by cell coordinates, so memory depends
+  only on output size and `N`, and it parallelises cleanly.
+
+  Datasheets quote RMS granularity, not disc radii. `lensfit` converts via
+  Selwyn granularity `G = sqrt(2A) * sigma`, with granularity rising roughly as
+  the cube root of density.
+- **Print (13).** The negative is printed onto paper: a second H&D cascade with
+  the paper's own gamma and speed, a print MTF, and the print/gate falloff.
+  Speed follows `SP = K/E_m` with `K = 0.8, m = 0.1` for films and
+  `K = 1000, m = 0.6` for papers.
+
+### 4.8 Stage 14 — encode
+
+Density to transmission (`D = log10(1/T)`), then the inverse of stage 1. When
+the document is 8-bit, apply triangular-PDF dither before quantising; the
+wide, low-amplitude gradients from vignette and glare band badly without it.
 
 ## 5. Lens and stock data
 
-Effects are driven by JSON data files, so new glass needs no rebuild.
+Effects are driven by JSON, so new glass needs no rebuild.
 
 ```jsonc
 // lensdata/cooke-s4-32mm.lens
 {
-  "schema": 1,
+  "schema": 2,
   "name": "Cooke S4/i 32mm",
   "focal_mm": 32.0,
   "aperture": { "t_stop": 2.0, "blades": 9, "curvature": 0.15, "rotation_deg": 0 },
-  "dispersion": { "model": "sellmeier", "B": [1.03961, 0.23179, 1.01047],
-                                        "C": [0.00600, 0.02002, 103.56065] },
-  "distortion": { "k1": -0.008, "k2": 0.001, "k3": 0.0, "p1": 0.0, "p2": 0.0 },
-  "lateral_ca": { "k_l": 0.0021 },
-  "vignette": { "natural_exp": 3.6,
-                "pupil": { "r_entrance": 1.0, "r_exit": 0.92, "sep_norm": 0.35 } },
-  "field": { "petzval": 0.42, "astig_sag": 0.18, "astig_tan": -0.11, "coma": 0.06,
-             "spherical": 0.04 },
-  "glare": { "amplitude": 0.004, "alpha": 2.1 },
+
+  // Sellmeier gives the shape; correction_nm and residual make it a real lens.
+  "dispersion": { "model": "sellmeier",
+                  "B": [1.03961, 0.23179, 1.01047],
+                  "C": [0.00600, 0.02002, 103.56065],
+                  "correction_nm": [486.1, 656.3],   // achromat: F and C lines
+                  "residual": 0.00042 },
+
+  "distortion":  { "k1": -0.008, "k2": 0.001, "k3": 0.0, "p1": 0.0, "p2": 0.0 },
+  "lateral_ca":  { "k_l": 0.0021 },
+
+  "pupil": { "r_entrance": 1.0, "r_exit": 0.92, "sep_norm": 0.35,
+             "apodization_slope": 0.31 },          // Aggarwal ramp, per radian
+
+  "vignette":  { "natural_exp": 3.6, "mech_vanish_fstop": 4.0 },
+
+  // Zernike wavefront coefficients, in waves, as functions of field radius t
+  "wavefront": { "petzval": 0.42, "astig": 0.18, "coma": 0.06, "spherical": 0.04 },
+
+  "glare": { "floor_stops": 20.0,
+             "gaussians": [ {"sigma_norm": 0.004, "weight": 0.55},
+                            {"sigma_norm": 0.03,  "weight": 0.30},
+                            {"sigma_norm": 0.25,  "weight": 0.15} ] },
+
   "flare": { "ghosts": [] }
 }
 ```
@@ -294,52 +462,63 @@ Effects are driven by JSON data files, so new glass needs no rebuild.
 ```jsonc
 // lensdata/kodak-5219.stock
 {
-  "schema": 1,
+  "schema": 2,
   "name": "Kodak Vision3 500T 5219",
-  "halation": { "threshold": 1.0, "strength": 0.22,
-                "radius_px_at_2k": { "r": 34.0, "g": 12.0, "b": 5.0 } },
-  "grain": { "density": { "r": 0.9, "g": 1.0, "b": 1.35 },
-             "radius_um": { "mu": 0.55, "sigma": 0.22 },
-             "signal_exponent": 0.5 },
-  "print_vignette": { "strength": 0.06, "exponent": 2.2 },
+  "layers": {
+    "r": { "sensitivity_nm": [[580,0.1],[620,0.9],[660,1.0],[700,0.4]],
+           "hd_curve": [[-3.0,0.08],[-1.5,0.35],[0.0,1.10],[1.2,1.95],[2.0,2.20]],
+           "mtf_cycles_per_mm_at_50": 78,
+           "halation_radius_px_at_2k": 34.0 },
+    "g": { "...": "..." },
+    "b": { "...": "..." }
+  },
+  "halation":  { "threshold": 1.0, "strength": 0.22, "backing": 0.6 },
+  "grain":     { "rms_granularity": 11.0, "radius_um": {"mu": 0.55, "sigma": 0.22},
+                 "density": { "r": 0.9, "g": 1.0, "b": 1.35 } },
+  "print":     { "paper_gamma": 1.67, "paper_speed": 250,
+                 "vignette_strength": 0.06, "vignette_exponent": 2.2 },
   "gate_weave": { "amplitude_px": 0.0 }
 }
 ```
 
-Radii are specified at a 2K reference width and scale with document width, so
-a stock looks the same on a 2K and an 8K document.
+Radii are given at a 2K reference width and scale with document width, so a
+stock looks the same on a 2K and an 8K document.
 
 ### 5.1 `lensfit` — how a preset becomes real
 
 A preset is only "accurate" if its numbers came from measurement. `lensfit`
-takes chart photographs (or digitised manufacturer MTF and vignette charts)
-and fits the parameters:
+takes either chart photographs or a lens prescription and fits the parameters:
 
 | Measurement | Input | Fits |
 |---|---|---|
 | Distortion | grid chart | `k1, k2, k3, p1, p2` |
-| Vignette | flat evenly-lit field, per stop | `natural_exp`, pupil geometry |
+| Vignette | flat field, **per stop** | `natural_exp`, pupil geometry, `mech_vanish_fstop` |
 | Lateral CA | high-contrast point grid | `k_l` |
-| Field aberrations | slanted edges at 5+ field positions, sagittal and tangential | `petzval`, `astig_*`, `coma` |
-| Glare | point light in a dark frame, HDR bracket | `amplitude`, `alpha` |
+| Secondary spectrum | through-focus series on a narrowband target | `correction_nm`, `residual` |
+| Wavefront | slanted edges at 5+ radii, sagittal and tangential | `petzval`, `astig`, `coma`, `spherical` |
+| Pupil apodization | defocused point grid, measure the intensity ramp across each blur disc | `apodization_slope` |
+| Glare | point light in a dark frame, HDR bracket | `floor_stops`, Gaussian widths and weights |
+| From a prescription | radii, thicknesses, glasses | all of the above via Hullin degree-3 |
+| Stock | datasheet H&D, MTF, RMS granularity | layer curves, grain radii |
 
-This is what separates the plugin from a slider pack.
+Aggarwal's point-grid protocol is directly reusable: photograph a grid of
+point sources, and each blur patch *is* the PSF at that field position.
 
 ## 6. Art-directable controls
 
-Physics sets the default; the artist deviates on purpose. Jeong's composite
-mapping supplies the mechanism: the field-dependence function `L(t, theta)`
-and the axial function `A(t, theta)` are replaced by
-`M(t, theta) = g(t, theta) . f(t, theta)`, built from atomic maps
-(`t^2`, `t^3`, `exp(t)`, `1 - t`, `1/t`, `cos(2*pi*t)`).
+Physics sets the default; the artist deviates on purpose. The field-dependence
+function `L(t, theta)` and the axial function `A(t, theta)` may be replaced by
+a composite `M = g . f` built from atomic maps (`t^2`, `t^3`, `exp t`, `1-t`,
+`1/t`, `cos 2*pi*t`).
 
 In the UI this is not exposed as function composition. It appears as:
 
-- **Amount** — global scale per effect, 0-200%, where 100% is the measured
-  physical value. Above 100% is explicitly a deviation.
+- **Amount** — per-effect scale, 0-200%, where 100% is the measured physical
+  value. Above 100% is explicitly a deviation.
 - **Falloff shape** — a small curve widget selecting the mapping.
-- **Spectral equalizer** — a per-wavelength weight curve (Jeong Sec. 5.2),
-  for pushing fringes toward magenta or cyan.
+- **Spectral equalizer** — a per-wavelength weight curve, for pushing fringes
+  toward magenta or cyan. It also drives the importance sampling in stage 2,
+  so emphasising a band costs no extra noise.
 
 Every control's neutral position reproduces the measured lens exactly.
 
@@ -352,15 +531,16 @@ Every control's neutral position reproduces the measured lens exactly.
 
 ### 7.2 Whole-image read, not tile-local
 
-Halation and veiling glare have support spanning hundreds of pixels, so a
-tile-local filter with a modest `inRect` overlap cannot produce a correct
-result. The adapter therefore reads the **whole layer** through
-`sPSChannelProcs->ReadPixelsFromLevel()` on `filterRecord->documentInfo`,
-processes it once in `lenscore`, and streams the result out through the normal
-tiled `outData` path. Memory is the cost: a 50MP RGBA float image is 800MB.
-Mitigations: process in float16 where precision allows, and fall back to a
-banded whole-width strip decomposition with PSF-radius overlap for documents
-above a configurable size.
+Halation and veiling glare have support spanning hundreds of pixels — the
+glare floor covers the entire frame by definition — so a tile-local filter
+with a modest `inRect` overlap cannot be correct. The adapter reads the
+**whole layer** through `sPSChannelProcs->ReadPixelsFromLevel()` on
+`filterRecord->documentInfo`, processes it once in `lenscore`, and streams the
+result out through the normal tiled `outData` path.
+
+Memory is the cost: 50MP RGBA float is 800MB. Mitigations: float16
+intermediates where precision allows, and a banded whole-width strip
+decomposition with PSF-radius overlap above a configurable document size.
 
 Photoshop delivers channels in **planar** order (all red, then all green);
 `lenscore` wants interleaved. Conversion happens at the adapter boundary only.
@@ -370,28 +550,28 @@ Photoshop delivers channels in **planar** order (all red, then all green);
 `filterRecord->depth` is 8, 16, or 32.
 
 - 8-bit: `0..255`.
-- 16-bit: **`0..32768`, not `0..65535`.** This is the classic Photoshop trap
-  and it is asserted in a unit test.
+- 16-bit: **`0..32768`, not `0..65535`.** The classic Photoshop trap; asserted
+  in a unit test.
 - 32-bit: float, already scene-referred, nominally `0..1` but legally above.
 
 ### 7.4 Colour management
 
 Read the document profile through the ICC suite. Convert to a linear working
-space (Rec.2020 linear, chosen for gamut headroom under saturated spectral
-fringes), operate, and convert back. Refuse to guess: if no profile is
-present, assume sRGB and say so in the dialog.
+space — **Rec.2020 linear**, for gamut headroom under saturated spectral
+fringes — operate, convert back. If no profile is present, assume sRGB and say
+so in the dialog rather than guessing silently.
 
 ### 7.5 Selection masks
 
 Respect `haveMask`. Leave `autoMask` at its default so Photoshop composites the
-selection, except when feathering interacts badly with wide-support stages, in
-which case we set `autoMask = false` and composite ourselves.
+selection, except where feathering interacts badly with wide-support stages, in
+which case set `autoMask = false` and composite ourselves.
 
 ### 7.6 Scripting
 
 Register parameters through `PIDescriptorParameters` with a unique event ID so
-the filter is recordable in Actions and callable from UXP `batchPlay`. Parameter
-keys mirror `params.hpp` field names one-to-one.
+the filter is recordable in Actions and callable from UXP `batchPlay`.
+Parameter keys mirror `params.hpp` field names one-to-one.
 
 ### 7.7 Threading
 
@@ -401,16 +581,15 @@ already owns.
 
 ## 8. UI (`lensui`)
 
-Dear ImGui, one codebase, two rendering backends (Metal, D3D11). Layout: four
+Dear ImGui, one codebase, two rendering backends (Metal, D3D11). Layout:
 collapsible sections matching the effect groups, a lens and stock preset
 picker, and a preview.
 
-**Preview strategy.** Full-resolution spatially varying convolution is seconds,
-not milliseconds. The preview renders a proxy: Photoshop supplies a
-downsampled proxy through `advanceState()`, and all PSF radii scale by the
-proxy ratio so the look is faithful at reduced resolution. Full quality runs
-once, on commit. A "Preview quality" control trades proxy resolution against
-latency, and the RGB three-band spectral tier is the preview default.
+**Preview strategy.** Full-resolution spatially varying convolution plus Monte
+Carlo grain is seconds, not milliseconds. The preview renders a proxy:
+Photoshop supplies a downsampled proxy through `advanceState()`, all PSF and
+halation radii scale by the proxy ratio, grain `N` drops to 8, and the RGB
+three-band spectral tier is the default. Full quality runs once, on commit.
 
 ## 9. Testing
 
@@ -418,23 +597,30 @@ Correctness is asserted numerically against synthetic targets, in `lenscli`,
 with no Photoshop involved.
 
 **Targets:** flat field, slanted-edge grid, point grid, Siemens star, single
-point in black.
+point in black, uniform grey patch ladder.
 
 **Assertions:**
 
 | Test | Method | Passes when |
 |---|---|---|
-| Vignette curve | render flat field, measure radial mean | matches `.lens` model within 1% |
+| Vignette curve | flat field, radial mean, per stop | matches `.lens` model within 1% |
+| Vignette consistency | stage-4 pupil energy vs stage-6 mechanical term | agree within 1% |
+| Mechanical vanishing | flat field at f/8 vs f/2 | mechanical term ~0 above `mech_vanish_fstop` |
 | MTF by field | slanted-edge MTF50 at 5 radii, sagittal and tangential | matches predicted defocus within 5% |
-| Lateral CA | point grid, measure R-B fringe width vs radius | matches Eq. 8 within 0.5px |
-| Energy | total linear luminance before and after stages 3-5 | conserved within 0.1% |
+| Lateral CA | point grid, R-B fringe width vs radius | matches the model within 0.5px |
+| Secondary spectrum | through-focus on narrowband targets | focus error zero at `correction_nm` |
+| Diffraction star | point source, small aperture | point count = blades (even) or 2x (odd) |
+| Energy | total linear luminance, stages 3-5, PSF normalised | conserved within 0.1% |
 | Rotational symmetry | rotationally symmetric input | output symmetric within 1e-4 |
+| Grain contrast | grey ladder before and after grain | patch means unchanged within 0.5% |
+| H&D round trip | grey ladder through negative and print | matches the datasheet curve within 2% |
 | Bit depth | 16-bit round trip | `0..32768` handled, no clipping |
 | Resolution invariance | same stock at 2K and 8K | grain and halation scale-match |
 
-Energy conservation and rotational symmetry are the two cheapest tests and
-catch the most bugs: they fail immediately on kernel normalisation errors and
-on any accidental axis-aligned assumption.
+Energy conservation, rotational symmetry, and grain contrast are the three
+cheapest tests and catch the most bugs: they fail immediately on kernel
+normalisation errors, on any accidental axis-aligned assumption, and on a
+grain model that has drifted off Newson's density relation.
 
 Golden images are stored as EXR with a perceptual-difference tolerance, not
 byte equality.
@@ -458,55 +644,43 @@ must download it and set `PHOTOSHOP_SDK_ROOT`.
 | # | Deliverable | Done when |
 |---|---|---|
 | 0 | Toolchain, CMake, PiPL, hello-world `.8bf` that inverts pixels | It loads and runs in Photoshop on both platforms |
-| 1 | `lenscore` skeleton, colour stages, `lenscli`, golden harness | Energy and symmetry tests pass on a null pipeline |
-| 2 | Lateral + axial CA, vignetting | Fringe-width and vignette-curve tests pass |
-| 3 | PSF assembly, Zernike, pupil clip, EFF convolver | MTF-by-field test passes |
+| 1 | `lenscore` skeleton, colour stages, `rgb2spec`, `lenscli`, golden harness | Energy and symmetry tests pass on a null pipeline |
+| 2 | Dispersion with secondary spectrum, lateral CA, vignetting | Fringe-width, vignette-curve and mechanical-vanishing tests pass |
+| 3 | Zernike wavefront, pupil model, PSF-by-FFT, EFF convolver | MTF-by-field and diffraction-star tests pass |
 | 4 | `lens8bf` real adapter: whole-image read, bit depths, colour, mask | Full-res render matches `lenscli` output |
 | 5 | ImGui dialog, proxy preview, descriptor scripting | Recordable in an Action, replayable |
-| 6 | Film stage: halation, grain, print vignette | Resolution-invariance test passes |
-| 7 | `lensfit` plus three measured presets | A fitted preset round-trips within tolerance |
+| 6 | Film stage: sensitivity, MTF, halation, H&D, grain, print | Grain-contrast, H&D and resolution-invariance tests pass |
+| 7 | `lensfit` plus three measured lens presets and two stocks | A fitted preset round-trips within tolerance |
 | 8 | Universal binary, signing, notarization, installer | Installs clean on a machine with no dev tools |
 
-Phases 1-3 are the accuracy work and carry the most risk of being wrong.
+Phases 1-3 and 6 are the accuracy work and carry the most risk of being wrong.
 Phases 4-5 are the Photoshop work and carry the most risk of being slow.
 
 ## 12. Risks
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Full-res render takes seconds | Poor feel | Proxy preview; commit-time full quality; optional Metal/D3D compute path |
+| Monte Carlo grain is slow. Newson report 37.8s for 2048x2048 at N=800; a 50MP document extrapolates to minutes | Unusable commit times | `N` is the quality knob, not a constant: 8 for preview, 64 for commit. Embarrassingly parallel. Pixel-wise algorithm keeps memory flat |
+| Full-res PSF render takes seconds | Poor feel | Proxy preview; commit-time full quality; optional Metal/D3D compute path |
 | 800MB whole-image buffer | Fails on large docs | float16 intermediates; banded strip fallback with PSF overlap |
-| SDK gating blocks phase 0 | Total block | Phases 1-3 need no SDK; sequence them in parallel |
+| SDK gating blocks phase 0 | Total block | Phases 1-3 and 6 need no SDK; sequence them in parallel |
 | ImGui on two platforms is more work than expected | Schedule | Ship macOS first; `lenscore` is unaffected |
 | C++ host path proves wrong overall | Rework | `lenscore` compiles to WASM for a UXP panel; physics survives intact |
-| Spectral uplift is inaccurate for saturated inputs | Wrong fringe colour | Rec.2020 linear working space; assert gamut in tests |
+| Spectral uplift inaccurate for saturated inputs | Wrong fringe colour | Rec.2020 linear working space; round-trip `deltaE` asserted in tests |
+| Stock datasheet curves are hard to source | Weak presets | H&D and MTF are digitisable from published datasheet plots; `lensfit` accepts sampled points |
 
 ## 13. References
 
-Held in `ref/`:
+All held in `ref/`.
 
-- Jeong, Lee, Kwon, Lee. *Expressive Chromatic Accumulation Buffering for
-  Defocus Blur.* The Visual Computer, 2016. Sellmeier dispersion, axial and
-  lateral CA, spectral importance sampling, expressive mapping functions.
-- Cholewiak, Love, Srinivasan, Ng, Banks. *ChromaBlur.* ACM TOG 36(6), 2017 —
-  **supplement only**. Disc/cylinder defocus kernel, per-channel focus shift.
-
-Wanted, in priority order:
-
-1. Aggarwal, Hua, Ahuja. *On cosine-fourth and vignetting effects in real
-   lenses.* ICCV 2001. — stage 6.
-2. Newson, Delon, Galerne. *A Stochastic Film Grain Model for
-   Resolution-Independent Rendering.* CGF 2017. — stage 10.
-3. Jakob, Hanika. *A Low-Dimensional Function Space for Efficient Spectral
-   Upsampling.* Eurographics 2019. — stage 2.
-4. Talvala, Adams, Horowitz, Levoy. *Veiling Glare in High Dynamic Range
-   Imaging.* SIGGRAPH 2007. — stage 7.
-5. Geigel, Musgrave. *A Model for Simulating the Photographic Development
-   Process on Digital Images.* SIGGRAPH 1997. — stages 8-10.
-6. Hullin, Hanika, Heidrich. *Polynomial Optics.* EGSR 2012. — stage 4.
-7. Schuler, Hirsch, Harmeling, Schölkopf. *Non-stationary correction of
-   optical aberrations.* ICCV 2011. — EFF convolver, Sec. 4.4.
-8. Ritschel et al. *Temporal Glare.* Eurographics 2009. — diffraction star.
-9. Cholewiak et al. *ChromaBlur* main paper. — completes the supplement.
-10. Wu, Zheng, Hu, Xu. *Rendering realistic spectral bokeh due to lens stops
-    and aberrations.* The Visual Computer, 2013. — cat's-eye validation.
+| Paper | Used for |
+|---|---|
+| Jeong, Lee, Kwon, Lee. *Expressive Chromatic Accumulation Buffering for Defocus Blur.* The Visual Computer, 2016. | Sellmeier dispersion, axial and lateral CA, spectral importance sampling, expressive mapping functions (Secs. 4.2, 4.3, 4.4, 6) |
+| Cholewiak, Love, Srinivasan, Ng, Banks. *ChromaBlur.* ACM TOG 36(6), 2017, plus supplement. | PSF as the squared modulus of the transformed complex aperture function; disc not Gaussian; per-channel focus shift (Sec. 4.4) |
+| Aggarwal, Hua, Ahuja. *On cosine-fourth and vignetting effects in real lenses.* ICCV 2001. | Pupil aberration and the apodization ramp; free `cos^n` exponent; mechanical vignetting vanishing above f/4; the point-grid PSF protocol (Secs. 4.4, 4.5, 5.1) |
+| Jakob, Hanika. *A Low-Dimensional Function Space for Efficient Spectral Upsampling.* Eurographics 2019. | RGB to spectrum: the sigmoid-polynomial model, table layout and lookup (Sec. 4.2) |
+| Schuler, Hirsch, Harmeling, Schölkopf. *Non-stationary correction of optical aberrations.* ICCV 2011. | Efficient Filter Flow forward operator; vignetting as relaxed filter normalisation; support-grid density (Sec. 4.4) |
+| Talvala, Adams, Horowitz, Levoy. *Veiling Glare in High Dynamic Range Imaging.* SIGGRAPH 2007. | Glare spread function shape and magnitude in f-stops; multi-width Gaussian fit; shift-variance caveat (Sec. 4.6) |
+| Newson, Delon, Galerne. *A Stochastic Film Grain Model for Resolution-Independent Rendering.* CGF 2017. | Inhomogeneous Boolean grain model, the density relation, the pixel-wise algorithm (Sec. 4.7) |
+| Geigel, Musgrave. *A Model for Simulating the Photographic Development Process on Digital Images.* SIGGRAPH 1997. | The whole film stage: sensitivity, emulsion MTF, H&D curves, negative-print cascade, Selwyn granularity (Sec. 4.7) |
+| Hullin, Hanika, Heidrich. *Polynomial Optics.* EGSR 2012. | Degree-3 aberration terms in ray space; prescription-to-coefficient path for `lensfit`; ghost enumeration for future flare (Secs. 4.4, 5.1) |
