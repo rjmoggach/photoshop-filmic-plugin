@@ -1,7 +1,6 @@
-.DS_Store
+# Reference material: papers and vendor SDKs. Copyrighted and/or licence-
+# restricted, and each is reproducible from its own source. Never tracked.
+ref/
+
 build/
-ref/*.pdf
-ref/*.zip
-ref/**/__MACOSX/
-ref/f9583d77/
-ref/photoshop-sdk/
+.DS_Store
