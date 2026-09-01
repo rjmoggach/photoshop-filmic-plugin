@@ -5,6 +5,7 @@
 #include "lenscore/plane.hpp"
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 #include <vector>
 
 namespace lens::metrics {
@@ -79,7 +80,13 @@ inline float mtf50(const Plane& roi) {
         }
     }
     std::vector<double> esf(NB, 0.0);
+    // Seed the carry-forward value from the first real sample, not 0.0, so
+    // any leading bins with no projected pixel are backfilled with the
+    // edge's actual dark level instead of being pinned to zero. With a zero
+    // dark level (every test target in this file) the two coincide, which
+    // is why this only shows up once slantedEdge's lo != 0.
     double last = 0.0;
+    for (int i = 0; i < NB; ++i) if (cnt[i] > 0) { last = acc[i] / cnt[i]; break; }
     for (int i = 0; i < NB; ++i) { if (cnt[i] > 0) last = acc[i] / cnt[i]; esf[i] = last; }
 
     // Line spread function, Hamming windowed to suppress ringing.
@@ -93,6 +100,10 @@ inline float mtf50(const Plane& roi) {
     const float dc = std::abs(lsf[0]);
     if (dc <= 0.0f) return 0.0f;
     // Bin width is 1/OS pixels, so bin k sits at k*OS/NB cycles per pixel.
+    // The analytic-gaussian test's 8% tolerance catches a gross axis error
+    // (e.g. k/NB instead of k*OS/NB, a factor of OS=4) loudly, but an
+    // off-by-one of order (NB-1)/NB ~ 0.4% sits comfortably inside it. The
+    // gate proves the axis is right to within a few percent, not exactly.
     float prevF = 0.0f, prevM = 1.0f;
     for (int k = 1; k < NB / 2; ++k) {
         const float f = float(k) * OS / float(NB);
@@ -103,6 +114,12 @@ inline float mtf50(const Plane& roi) {
     return float(OS) * 0.5f;
 }
 
+// Bins by normalised field radius (frameOf: corner = 1.0), not pixels. The
+// outermost bin is fed only by the four corner wedges of a rectangular
+// image -- the inscribed circle of radius 1.0 has no pixels beyond it along
+// the edge midpoints -- so it is a directionally biased sample, not a true
+// azimuthal ring average. Acceptance-suite callers should treat the last
+// bin as approximate.
 inline std::vector<float> radialMean(const Plane& p, int bins) {
     const Frame f = frameOf(p.w, p.h);
     std::vector<double> acc(size_t(bins), 0.0), cnt(size_t(bins), 0.0);
@@ -130,8 +147,13 @@ inline float fringeWidthPx(const Image& roi) {
 inline double totalEnergy(const Plane& p) { double s = 0; for (float v : p.v) s += v; return s; }
 inline double totalEnergy(const Image& im) { double s = 0; for (float v : im.px) s += v; return s; }
 
+// Rotational (90-degree) asymmetry, normalised by peak magnitude. A
+// non-square image has no well-defined 90-degree rotation, so that is a
+// programmer error rather than a measurement -- it throws instead of
+// returning a sentinel a caller could mistake for a real (extreme)
+// asymmetry value.
 inline float rot90Asymmetry(const Plane& p) {
-    if (p.w != p.h) return 1e9f;
+    if (p.w != p.h) throw std::invalid_argument("rot90Asymmetry: image must be square");
     const int n = p.w;
     float peak = 0.0f, worst = 0.0f;
     for (float v : p.v) peak = std::max(peak, std::abs(v));

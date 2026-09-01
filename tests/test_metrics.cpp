@@ -2,6 +2,7 @@
 #include "metrics.hpp"
 #include "targets.hpp"
 #include <cmath>
+#include <stdexcept>
 
 using namespace lens;
 using namespace lens::metrics;
@@ -23,6 +24,21 @@ TEST_CASE("mtf50 of a sharp edge is near the Nyquist limit") {
 TEST_CASE("mtf50 recovers the analytic value for a known gaussian") {
     for (float sigma : {1.0f, 1.5f, 2.0f, 3.0f}) {
         const Plane e = gaussianBlur(slantedEdge(128, 128, 5.0f, 0.0f, 1.0f), sigma);
+        const float got  = mtf50(crop(e, 24, 24, 80, 80));
+        const float want = 0.1874f / sigma;
+        CAPTURE(sigma); CAPTURE(got); CAPTURE(want);
+        CHECK(got == doctest::Approx(want).epsilon(0.08));
+    }
+}
+
+TEST_CASE("mtf50 recovers the analytic value with a nonzero dark level") {
+    // Contrast is hi - lo, and MTF50 is contrast-normalised, so a nonzero
+    // dark level should not change the answer. This is the regression test
+    // for the leading-bin fill: with lo == 0.0 (every other test target in
+    // this file) a wrong fill that pins empty bins to zero is invisible,
+    // because zero happens to be the right answer too.
+    for (float sigma : {1.0f, 1.5f, 2.0f, 3.0f}) {
+        const Plane e = gaussianBlur(slantedEdge(128, 128, 5.0f, 0.2f, 0.9f), sigma);
         const float got  = mtf50(crop(e, 24, 24, 80, 80));
         const float want = 0.1874f / sigma;
         CAPTURE(sigma); CAPTURE(got); CAPTURE(want);
@@ -87,4 +103,9 @@ TEST_CASE("rotational asymmetry is zero for a symmetric image and large otherwis
     Plane skew = sym;
     for (int y = 0; y < 65; ++y) skew.at(10, y) += 1.0f;
     CHECK(rot90Asymmetry(skew) > 0.1f);
+}
+
+TEST_CASE("rot90Asymmetry throws on a non-square image") {
+    const Plane rect(64, 32);
+    CHECK_THROWS_AS(rot90Asymmetry(rect), std::invalid_argument);
 }
