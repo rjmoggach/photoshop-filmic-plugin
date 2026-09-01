@@ -602,7 +602,25 @@ sRGB and say so in the panel rather than guessing silently.
 Photoshop's 16-bit values run **`0..32768`, not `0..65535`** — the classic
 trap, asserted in a unit test wherever the addon touches 16-bit data.
 
-### 7.5 Threading
+### 7.5 Error policy
+
+Two categories, handled differently on purpose:
+
+- **Untrusted input** — a file header, a document's pixels, a parameter from
+  the panel — never throws. It returns an empty object or `std::nullopt`, and
+  the caller decides. `pfm::read`, `readTable` and the raster-size guards all
+  work this way.
+- **Programmer error** — an internal caller handing a radix-2 transform a
+  non-power-of-two size, say — throws. It cannot be handled meaningfully where
+  it happens, and silently absorbing it would corrupt every downstream result
+  while still producing plausible-looking output.
+
+**The addon boundary must catch everything.** `lensaddon`'s entry points wrap
+all work in a `try`/`catch(...)`, because an exception escaping into
+Photoshop's process would take the application down with it. A caught
+exception becomes an error returned to the panel, which reports it to the user.
+
+### 7.6 Threading
 
 `lenscore` may use all cores over a buffer the addon owns. UXP addon entry
 points follow the SDK's threading contract (`UxpTask`), and no Photoshop or
