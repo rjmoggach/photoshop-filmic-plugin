@@ -46,6 +46,36 @@ TEST_CASE("mtf50 recovers the analytic value with a nonzero dark level") {
     }
 }
 
+TEST_CASE("mtf50 recovers the analytic value with a narrow ROI that leaves ESF bins empty") {
+    // The 80x80 nonzero-dark-level test above never exercises the leading-
+    // bin backfill: the ESF spans +/-32px at 4x oversampling over 256 bins,
+    // and pixels projected from an 80px-wide ROI span roughly +/-40px --
+    // wider than the ESF range -- so every bin gets a real sample there and
+    // the fix and the old last=0.0 bug are bit-identical. A 40px ROI
+    // projects only about +/-20px, leaving roughly 48 leading (and 48
+    // trailing) ESF bins empty, so this is the test that actually walks the
+    // backfill path. Measured directly against a standalone build of both
+    // versions (crop=40x40, lo=0.4): the fix stays within ~4.4% of the
+    // analytic value at every sigma below, matching the base 80x80 test's
+    // accuracy almost exactly -- the narrower ROI is not meaningfully
+    // noisier once the dark level is filled correctly. The reverted
+    // last=0.0 code was off by 17-34% on the same inputs. 10% tolerance
+    // (vs the base test's 8%) leaves headroom for the fix while sitting
+    // nowhere near the broken result, so this test passes with the fix and
+    // fails without it -- see task-17-report.md for the recorded numbers.
+    for (float sigma : {1.0f, 1.2f, 1.5f}) {
+        const Plane e = gaussianBlur(slantedEdge(128, 128, 5.0f, 0.4f, 0.9f), sigma);
+        const float got  = mtf50(crop(e, 44, 44, 40, 40));
+        const float want = 0.1874f / sigma;
+        CAPTURE(sigma); CAPTURE(got); CAPTURE(want);
+        // .scale(0) makes epsilon a true relative tolerance: doctest::Approx
+        // defaults scale to 1.0, and threshold = epsilon*(scale + max(|a|,|b|));
+        // with values in the 0.06-0.2 range that default floor is 50-140% of
+        // the target, which would pass almost anything. Verified below.
+        CHECK(got == doctest::Approx(want).epsilon(0.10).scale(0));
+    }
+}
+
 TEST_CASE("mtf50 falls monotonically as blur grows") {
     float prev = 1.0f;
     for (float sigma : {0.8f, 1.2f, 1.8f, 2.6f}) {
