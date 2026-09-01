@@ -45,3 +45,51 @@ TEST_CASE("knee inverts exactly") {
     for (float v : {0.1f, 0.85f, 0.9f, 0.99f, 1.0f, 1.5f})
         CHECK(compressHighlights(expandHighlights(v, k), k) == doctest::Approx(v).epsilon(1e-4));
 }
+
+TEST_CASE("degenerate knee: threshold at 1.0 returns identity") {
+    Knee k{1.0f, 8.0f};
+    for (float v : {0.0f, 0.5f, 1.0f, 1.5f}) {
+        float expanded = expandHighlights(v, k);
+        float compressed = compressHighlights(v, k);
+        CHECK(std::isfinite(expanded));
+        CHECK(std::isfinite(compressed));
+        CHECK(expanded == v);
+        CHECK(compressed == v);
+    }
+}
+
+TEST_CASE("degenerate knee: threshold at 0.0 returns identity") {
+    Knee k{0.0f, 8.0f};
+    for (float v : {0.0f, 0.5f, 1.0f, 1.5f}) {
+        float expanded = expandHighlights(v, k);
+        float compressed = compressHighlights(v, k);
+        CHECK(std::isfinite(expanded));
+        CHECK(std::isfinite(compressed));
+        CHECK(expanded == v);
+        CHECK(compressed == v);
+    }
+}
+
+TEST_CASE("degenerate knee: peak equals threshold returns identity") {
+    Knee k{0.85f, 0.85f};
+    for (float v : {0.0f, 0.5f, 1.0f, 1.5f}) {
+        float expanded = expandHighlights(v, k);
+        float compressed = compressHighlights(v, k);
+        CHECK(std::isfinite(expanded));
+        CHECK(std::isfinite(compressed));
+        CHECK(expanded == v);
+        CHECK(compressed == v);
+    }
+}
+
+TEST_CASE("degenerate knee: peak below 1.0 returns identity") {
+    Knee k{0.85f, 0.5f};
+    for (float v : {0.0f, 0.5f, 1.0f, 1.5f}) {
+        float expanded = expandHighlights(v, k);
+        float compressed = compressHighlights(v, k);
+        CHECK(std::isfinite(expanded));
+        CHECK(std::isfinite(compressed));
+        CHECK(expanded == v);
+        CHECK(compressed == v);
+    }
+}
