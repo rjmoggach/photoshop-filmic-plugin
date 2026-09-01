@@ -25,17 +25,14 @@ inline float refractiveIndex(const Dispersion& d, float lambda_nm) {
     return float(std::sqrt(n2));
 }
 
-// Raw relative focal-length error before correction: F_ref/F(lambda) - 1,
-// which (since power P is proportional to n-1, and F = 1/P) works out to
-// (n(lambda) - 1)/(n_ref - 1) - 1. For normal dispersion, index falls as
-// wavelength rises, so this is monotonically DEcreasing with wavelength --
-// blue (short lambda, high n, more bending) focuses closer than red (long
-// lambda, low n, less bending), the standard longitudinal-chromatic-
-// aberration direction.
+// Raw relative focal-length error before correction: F(lambda)/F_ref - 1.
+// Focal length goes as 1/(n-1), so the ratio is (nRef-1)/(n-1). NOT (n-1)/(nRef-1),
+// which is the relative optical power -- the negative of this -- and would flip the
+// sign of chromatic defocus everywhere downstream.
 inline float rawFocusError(const Dispersion& d, float lambda_nm, float lambda_ref_nm) {
     const float nRef = refractiveIndex(d, lambda_ref_nm);
     const float n    = refractiveIndex(d, lambda_nm);
-    return (n - 1.0f) / (nRef - 1.0f) - 1.0f;
+    return (nRef - 1.0f) / (n - 1.0f) - 1.0f;
 }
 
 // Relative focal-length error, after achromatic/apochromatic correction.

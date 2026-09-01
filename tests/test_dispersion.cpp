@@ -17,13 +17,15 @@ TEST_CASE("dispersion is normal, index falls as wavelength rises") {
     }
 }
 
-TEST_CASE("an uncorrected singlet has monotonic focus error") {
+TEST_CASE("an uncorrected singlet has monotonic focus error, rising with wavelength") {
     Dispersion d = bk7();
     d.correction_nm.clear();
+    CHECK(focusError(d, 400.0f, 650.0f) < 0.0f);   // blue focuses closer
+    CHECK(focusError(d, 760.0f, 650.0f) > 0.0f);   // red focuses further
     float prev = focusError(d, 400.0f, 650.0f);
     for (float l = 420.0f; l <= 760.0f; l += 20.0f) {
         const float e = focusError(d, l, 650.0f);
-        CHECK(e < prev);
+        CHECK(e > prev);
         prev = e;
     }
 }
