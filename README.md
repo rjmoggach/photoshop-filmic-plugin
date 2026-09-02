@@ -36,6 +36,15 @@ look like a lens rather than like a filter.
 
 **Filter → Moggach → Filmic…**
 
+<p align="center">
+  <img src="assets/ui-screengrab.png" alt="The Filmic dialog" width="100%">
+</p>
+
+<p align="center">
+  <em>The Anamorphic scope preset. The preview is live — drag a slider and it
+  follows.</em>
+</p>
+
 ## What it does
 
 | Control | What it is |
