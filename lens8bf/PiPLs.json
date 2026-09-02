@@ -1,0 +1,43 @@
+{
+  "PiPLs": [
+    {
+      "Kind": "Filter",
+      "Name": "Filmic...",
+      "Category": "Moggach",
+      "Version": 4,
+      "SubVersion": 0,
+      "ComponentVersionShortNum": 1,
+      "ComponentVersionMinorRevNum": 0,
+      "ComponentVersionDotRevNum": 0,
+      "ComponentName": "Filmic",
+      "CodeMacARM64": "PluginMain",
+      "CodeMacIntel64": "PluginMain",
+      "CodeEntryPointWin64": "PluginMain",
+      "SupportedModes": {
+        "Bitmap": false,
+        "GrayScale": true,
+        "IndexedColor": false,
+        "RGBColor": true,
+        "CMYKColor": false,
+        "HSLColor": false,
+        "HSBColor": false,
+        "Multichannel": false,
+        "Duotone": false,
+        "LABColor": false
+      },
+      "EnableInfo": "in (PSHOP_ImageMode, RGBMode, GrayScaleMode, RGB48Mode, Gray16Mode)",
+      "PlugInMaxSize": [2000000, 2000000],
+      "MonitorScalingAware": true,
+      "FilterLayerSupport": true,
+      "FilterCaseInfo": [
+        { "InputHandling": "InWhiteMat", "OutputHandling": "OutWhiteMat", "WriteOutsideSelection": false, "FiltersLayerMasks": true, "WorksWithBlankData": true, "DontCopySourceToDestination": false },
+        { "InputHandling": "InWhiteMat", "OutputHandling": "OutWhiteMat", "WriteOutsideSelection": true,  "FiltersLayerMasks": true, "WorksWithBlankData": true, "DontCopySourceToDestination": false },
+        { "InputHandling": "InWhiteMat", "OutputHandling": "OutWhiteMat", "WriteOutsideSelection": true,  "FiltersLayerMasks": true, "WorksWithBlankData": true, "DontCopySourceToDestination": false },
+        { "InputHandling": "InWhiteMat", "OutputHandling": "OutWhiteMat", "WriteOutsideSelection": false, "FiltersLayerMasks": true, "WorksWithBlankData": true, "DontCopySourceToDestination": false },
+        { "InputHandling": "InWhiteMat", "OutputHandling": "OutWhiteMat", "WriteOutsideSelection": true,  "FiltersLayerMasks": true, "WorksWithBlankData": true, "DontCopySourceToDestination": false },
+        { "InputHandling": "InWhiteMat", "OutputHandling": "OutWhiteMat", "WriteOutsideSelection": false, "FiltersLayerMasks": true, "WorksWithBlankData": true, "DontCopySourceToDestination": false },
+        { "InputHandling": "InWhiteMat", "OutputHandling": "OutWhiteMat", "WriteOutsideSelection": true,  "FiltersLayerMasks": true, "WorksWithBlankData": true, "DontCopySourceToDestination": false }
+      ]
+    }
+  ]
+}

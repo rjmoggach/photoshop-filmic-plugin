@@ -1,0 +1,14 @@
+# Reference material: papers and vendor SDKs. Copyrighted and/or licence-
+# restricted, and each is reproducible from its own source. Never tracked.
+ref/
+
+build/
+.DS_Store
+
+# Editor and tooling scratch
+.superpowers/
+.impeccable/
+
+
+# The Photoshop SDK is licence-restricted; never vendored.
+lens8bf/sdk/
