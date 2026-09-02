@@ -15,6 +15,7 @@
 // because they are inside Photoshop. The zoomable proxy here is the equivalent.
 
 #import <Cocoa/Cocoa.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 #include "dialog.h"
 #include "presets.h"
@@ -652,7 +653,7 @@ static NSString* const kImportItem = @"Load a preset from a file…";
     [self readControls];
     NSSavePanel* sp = [NSSavePanel savePanel];
     sp.nameFieldStringValue = @"lens.filmic.json";
-    sp.allowedFileTypes = @[@"json"];
+    sp.allowedContentTypes = @[UTTypeJSON];
     if ([sp runModal] != NSModalResponseOK || sp.URL == nil) return;
 
     NSError* err = nil;
@@ -668,7 +669,7 @@ static NSString* const kImportItem = @"Load a preset from a file…";
 
 - (void)importFromFile {
     NSOpenPanel* op = [NSOpenPanel openPanel];
-    op.allowedFileTypes = @[@"json"];
+    op.allowedContentTypes = @[UTTypeJSON];
     op.allowsMultipleSelection = NO;
     if ([op runModal] != NSModalResponseOK || op.URL == nil) return;
 

@@ -43,6 +43,7 @@ set_target_properties(lens8bf PROPERTIES
 target_link_libraries(lens8bf PRIVATE
     "-framework Cocoa"
     "-framework CoreFoundation"
+    "-framework UniformTypeIdentifiers"
 )
 
 # Photoshop reads PiPLs.json straight out of Resources -- no Rez step needed --
