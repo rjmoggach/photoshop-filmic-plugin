@@ -77,20 +77,39 @@ read as a lens rather than as an effect applied evenly.
 
 ## Installing
 
-Copy `Filmic.plugin` into Photoshop's plug-ins folder and restart:
+**[Download the latest release](https://github.com/rjmoggach/photoshop-filmic-plugin/releases/latest)**,
+unzip it, and double-click **Install Filmic.command**. Then quit and reopen
+Photoshop and look under **Filter ▸ Moggach ▸ Filmic…**
 
+### macOS will refuse it the first time
+
+That is expected, and it is not a sign anything is wrong. The plug-in is
+ad-hoc signed rather than signed with a paid Apple Developer ID, so macOS
+treats it as coming from an unidentified developer.
+
+**Right-click the installer and choose Open**, then click Open in the dialog
+that appears. macOS only asks once.
+
+The installer asks for your password because Photoshop's `Plug-ins` folder
+belongs to the system. Nothing outside that folder is touched.
+
+### Or by hand
+
+```bash
+xattr -dr com.apple.quarantine Filmic.plugin
+sudo cp -R Filmic.plugin "/Applications/Adobe Photoshop 2026/Plug-ins/"
 ```
-/Applications/Adobe Photoshop 2026/Plug-ins/
-```
 
-That folder is owned by root, so either make it writable once or copy with
-`sudo`. Photoshop 2026 no longer offers an "Additional Plug-ins Folder"
-preference, so this is the only location it scans.
+That first line is not optional. macOS flags anything downloaded from the
+internet, and while the flag is set Photoshop will quietly decline to load the
+plug-in and tell you nothing about why. Photoshop itself is happy with ad-hoc
+signed code — it runs with the hardened runtime but sets
+`com.apple.security.cs.disable-library-validation`.
 
-The bundle is ad-hoc signed. That is enough: Photoshop runs with the hardened
-runtime but sets `com.apple.security.cs.disable-library-validation`, so a
-plug-in that Apple has not signed still loads. For distribution, sign with a
-Developer ID as `com.moggach.filmic`.
+Photoshop 2026 no longer offers an "Additional Plug-ins Folder" preference, so
+its own `Plug-ins` folder is the only place it looks.
+
+To uninstall, delete `Filmic.plugin` from that folder.
 
 ## Building
 
